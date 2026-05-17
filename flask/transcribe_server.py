@@ -5,6 +5,7 @@ import numpy as np
 import threading
 import requests
 import logging
+import yaml
 from faster_whisper import WhisperModel
 import base64
 import queue
@@ -110,28 +111,19 @@ except Exception:
 REDIS_TRANSCRIPT_TTL = 2*60*60
 
 # whisper language code to NLLB-200 language tag mapping
-# extend this dict as needed for additional languages
-#later added as a config file for dynamic support
-WHISPER_TO_NLLB_LANG = {
-    'en': 'eng_Latn',
-    'de': 'deu_Latn',
-    'fr': 'fra_Latn',
-    'es': 'spa_Latn',
-    'hi': 'hin_Deva',
-    'zh': 'zho_Hans',
-    'ar': 'arb_Arab',
-    'pt': 'por_Latn',
-    'ru': 'rus_Cyrl',
-    'ja': 'jpn_Jpan',
-}
+def load_lang_config():
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lang_map.yaml')
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config.get('whisper_to_nllb_lang', {})
+
+WHISPER_TO_NLLB_LANG = load_lang_config()
 
 def nllb_translate(text, src_lang_whisper, tgt_lang_nllb):
-    # translate text from source language to target language using NLLB-200
-    src_lang_nllb = WHISPER_TO_NLLB_LANG.get(src_lang_whisper, 'eng_Latn')
+    lang_map = load_lang_config()
+    src_lang_nllb = lang_map.get(src_lang_whisper, 'eng_Latn')
     if src_lang_nllb == tgt_lang_nllb:
-        # no translation needed if source and target are the same language
         return text
-    # reuse the already-loaded nllb_tokenizer
     nllb_tokenizer.src_lang = src_lang_nllb
     inputs = nllb_tokenizer(text, return_tensors='pt', padding=True).to(device)
     target_lang_id = nllb_tokenizer.convert_tokens_to_ids(tgt_lang_nllb)

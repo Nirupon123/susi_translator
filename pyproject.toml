@@ -19,9 +19,13 @@ dependencies = [
     "pyaudio",
     "pybars3",
     "python-dotenv",
+    "pyyaml>=6.0.3",
+    "redis>=7.4.0",
     "requests",
     "scipy",
+    "soundfile>=0.13.1",
     "torch",
+    "transformers>=5.8.1",
 ]
 
 [tool.uv]
