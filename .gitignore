@@ -1,9 +1,23 @@
+#OS
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.env*
+
 models/*.pt
 models/*.bin
-__pycache__
+flask/lang_map.yaml
+
+app/db.sqlite3
+app/staticfiles/
+app/static/css/
+app/static/js/
+app/static/fonts/
+app/static/img/
+app/static/favicon.ico
 django/db.sqlite3
 django/static/*
-venv/
-.env*
-flask/lang_map.yaml
