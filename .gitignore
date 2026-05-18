@@ -20,4 +20,4 @@ app/static/fonts/
 app/static/img/
 app/static/favicon.ico
 django/db.sqlite3
-django/static/*
+django/static/*app/static/*.html
