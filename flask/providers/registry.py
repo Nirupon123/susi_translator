@@ -1,6 +1,7 @@
 """
-provider registry for Translator.
-This module manages the deferred instantiation of translation providers
+Per-tenant provider registry for Susi Translator,
+This module manages the lifecycle of translation 
+providers
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from .base import TranslationProvider, TranslationError, ProviderConfigError
 
 logger = logging.getLogger(__name__)
 
-# Registry of provider factories
+# Registry of provider factories. Each factory is a callable that takes a config dict
+# and returns a TranslationProvider instance
 _PROVIDER_FACTORIES: Dict[str, Callable[[Dict[str, Any]], TranslationProvider]] = {}
 
 
@@ -21,9 +23,11 @@ def register_provider(
     name: str, 
     factory: Callable[[Dict[str, Any]], TranslationProvider]
 ) -> None:
-    """Register a provider factory under a canonical name"""
+    """
+    Register a provider factory under a canonical name
+    """
     _PROVIDER_FACTORIES[name] = factory
-    logger.debug(f"Registered translation provider factory: {name}")
+    logger.debug(f"Registered translation provider: {name}")
 
 
 def available_providers() -> List[str]:
@@ -33,22 +37,24 @@ def available_providers() -> List[str]:
 
 class ProviderRegistry:
     """
-    A registry that defers translation provider instantiation until first use
-    to minimize startup time and memory footprint.
+    Per-tenant provider registry. One shared instance should be created
+    at module load time in transcribe_server.py and used across all requests
     """
+
     def __init__(self):
-        # Maps provider_name -> { "config": dict, "instance": Optional[TranslationProvider] }
-        self._providers: Dict[str, Dict[str, Any]] = {}
+        # tenant_id -> { "provider_name": str, "config": dict, "instance": Optional[TranslationProvider] }
+        self._tenants: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def configure(
         self,
+        tenant_id: str,
         provider_name: str,
         api_key: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         """
-        Configure a provider's settings before instantiation.
+        Configure a provider for a tenant session.
         """
         if provider_name not in _PROVIDER_FACTORIES:
             raise ValueError(
@@ -58,41 +64,47 @@ class ProviderRegistry:
 
         # Bundle the config as expected by base.py
         config_dict = {"api_key": api_key, **kwargs}
-        
+
         with self._lock:
-            self._providers[provider_name] = {
+            self._tenants[tenant_id] = {
+                "provider_name": provider_name,
                 "config": config_dict,
-                "instance": None,  # Instantiated lazily on first use
+                "instance": None,  # instantiated lazily on first use
             }
             
-        logger.info(f"Configured lazy provider '{provider_name}'")
+        logger.info(
+            f"Configured provider '{provider_name}' for tenant '{tenant_id}'"
+        )
 
     def translate(
         self,
-        provider_name: str,
+        tenant_id: str,
         text: str,
         source_lang: str,
         target_lang: str,
         **kwargs: Any
-    ) -> str:
+    ) -> Optional[str]:
         """
-        Translates text, lazily instantiating the provider if necessary.
+        Translate text for a given tenant using their configured provider.
         """
-        entry = self._providers.get(provider_name)
-        
+        #Fast, lock-free read to get the tenant entry
+        entry = self._tenants.get(tenant_id)
         if entry is None:
-            raise ValueError(f"Provider '{provider_name}' has not been configured.")
+            return None  # no translation configured for this tenant
 
-        # Lazy Instantiation with Double-Checked Locking
+        #Lazy Instantiation with Double-Checked Locking
         if entry["instance"] is None:
             with self._lock:
-                # Check again inside the lock to prevent a race condition
+                
                 if entry["instance"] is None:
+                    provider_name = entry["provider_name"]
                     factory = _PROVIDER_FACTORIES[provider_name]
+                    
                     try:
+                        # Pass the bundled config dict to match base.py
                         instance = factory(entry["config"])
                         entry["instance"] = instance
-                        logger.info(f"Lazily instantiated '{provider_name}'")
+                        logger.info(f"Lazily instantiated '{provider_name}' for tenant '{tenant_id}'")
                     except Exception as e:
                         logger.error(f"Failed to instantiate '{provider_name}': {e}")
                         raise ProviderConfigError(f"Provider initialization failed: {e}")
@@ -100,7 +112,22 @@ class ProviderRegistry:
         provider: TranslationProvider = entry["instance"]
 
         if not provider.is_available():
-            raise RuntimeError(f"Provider '{provider_name}' is currently unavailable.")
+            logger.warning(
+                f"Provider '{provider.provider_name}' is not available "
+                f"for tenant '{tenant_id}'"
+            )
+            return None
 
         # Pass the extra kwargs down to support provider-specific settings
         return provider.translate(text, source_lang, target_lang, **kwargs)
+
+    def remove(self, tenant_id: str) -> None:
+        """Remove provider config for a tenant"""
+        with self._lock:
+            self._tenants.pop(tenant_id, None)
+
+    def get_provider_name(self, tenant_id: str) -> Optional[str]:
+        """Return the configured provider name for a tenant, or None."""
+        with self._lock:
+            entry = self._tenants.get(tenant_id)
+            return entry["provider_name"] if entry else None
