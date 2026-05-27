@@ -24,6 +24,9 @@ class TranslationProvider(ABC):
     """
     Abstract base class for all translation and LLM providers.
 
+    To ensure fast startup times, heavy model initializations are strictly 
+    deferred until a translation is actually requested, rather than loading at import time.
+    
     The translate method leverages kwargs to remain extensible, allowing you to easily pass 
     provider-specific settings—like an LLM's temperature or DeepL's formality—without ever having 
     to alter the base signature.
@@ -51,20 +54,20 @@ class TranslationProvider(ABC):
         **kwargs: Optional provider-specific parameters ('temperature' for LLMs, 
         'formality' for DeepL).
         """
-        pass
+        ...
 
     @abstractmethod
     def is_available(self) -> bool:
         """
         Check if the provider is healthy and ready to serve requests.
         """
-        pass
+        ...
 
     @property
     @abstractmethod
     def provider_name(self) -> str:
         """
-        The canonical, machine-readable name of the provider,
-        Use in logging, telemetry, and registry lookups.
+        The canonical, machine-readable name of the provider (e.g., 'nllb', 'deepl', 'openai').
+        Used heavily in logging, telemetry, and registry lookups.
         """
-        pass
+        ...
