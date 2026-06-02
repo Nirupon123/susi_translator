@@ -71,7 +71,11 @@ class ProviderRegistry:
         #validating Transcription Configuration outside the lock boundaries
         if transcription:
             t_name = transcription.get("provider_name")
-            if t_name and t_name not in _PROVIDER_FACTORIES:
+            if not t_name:
+                raise ValueError(
+                    "Transcription config block is missing required 'provider name'."
+                )
+            if t_name not in _PROVIDER_FACTORIES:
                 raise ValueError(
                     f"Unknown transcription provider '{t_name}'. "
                     f"Available: {available_providers()}"
@@ -80,7 +84,11 @@ class ProviderRegistry:
         #validating Translation Configuration OUTSIDE the lock boundaries
         if translation:
             tx_name = translation.get("provider_name")
-            if tx_name and tx_name not in _PROVIDER_FACTORIES:
+            if not tx_name:
+                raise ValueError(
+                    "Translation config block is missing required 'provider name'."
+                )
+            if tx_name not in _PROVIDER_FACTORIES:
                 raise ValueError(
                     f"Unknown translation provider '{tx_name}'. "
                     f"Available: {available_providers()}"
