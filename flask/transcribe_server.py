@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, Response, stream_with_context
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
@@ -13,6 +13,7 @@ import uuid
 import wave
 import io
 import os
+import json
 from dotenv import load_dotenv
 
 # torch and whisper are imported lazily below only when we actually need
@@ -773,6 +774,88 @@ class GetLatestTranscript(Resource):
                 return jsonify({'chunk_id': '-1', 'transcript': ''})
             latest_transcript = t[latest_chunk_id]['transcript']
             return jsonify({'chunk_id': latest_chunk_id, 'transcript': latest_transcript})
+
+
+@api.route('/api/v1/translate/stream')
+class StreamTranscript(Resource):
+    @api.doc(params={
+        'tenant_id': {'description': 'Tenant ID', 'default': '0000'},
+        'source':    {'description': 'Resolve to the latest session for a source.', 'type': 'string', 'enum': ['mic', 'file', 'url', 'stdin' , 'youtube']},
+        'last_chunk_id': {'description': 'Start streaming chunks newer than this ID (timestamp in ms). Defaults to 0.', 'type': 'string', 'default': '0'}
+    })
+    def get(self):
+        '''
+        Establish a real-time, one-way Server-Sent Events stream 
+        for incoming transcriptions and translations
+        '''
+        tenant_id = _resolve_tenant(request.args)
+        if not tenant_id:
+            return {"status": "error", "message": "Missing or invalid tenant_id / source"}, 400
+
+        # Parse the last chunk ID the client has seen
+        last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
+
+        @stream_with_context
+        def event_generator(last_id):
+            # Send an initial connection acknowledgement to the client
+            yield f"data: {json.dumps({'status': 'connected', 'message': 'Stream established'})}\n\n"
+            
+            # Dictionary to track the exact text sent for each chunk_id in this active connection
+            client_state = {}
+            
+            while True:
+                try:
+                    new_chunks = []
+                    
+                    with transcripts_lock:
+                        t = transcriptd.get(tenant_id, {})
+                        
+                        for k in _numeric_sorted_keys(t):
+                            chunk_int = _chunk_id_int(k)
+                            
+                            # Use >= so we can still evaluate the active, trailing chunk for updates
+                            if chunk_int is not None and chunk_int >= last_id:
+                                current_transcript = t[k].get('transcript', '')
+                                current_translation = t[k].get('translation', '')
+                                
+                                # Only yield if the text has grown/changed since we last pushed it to this client
+                                if client_state.get(k) != current_transcript:
+                                    payload = {
+                                        'chunk_id': k,
+                                        'transcript': current_transcript,
+                                        'translation': current_translation
+                                    }
+                                    new_chunks.append(payload)
+                                    
+                                    # Record what we just sent so we don't double-send it
+                                    client_state[k] = current_transcript
+                                    
+                                    # Update the high-water mark
+                                    last_id = max(last_id, chunk_int)
+
+                    # Yield the new payloads outside the lock
+                    for chunk in new_chunks:
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                except Exception as e:
+                    logger.error("Error generating stream data", exc_info=True)
+                    yield f"data: {json.dumps({'status': 'error', 'message': 'Stream encountered an error'})}\n\n"
+                    break
+                
+                # Sleep briefly to avoid high cpu polling
+                time.sleep(0.5)
+
+        # Create response with specific headers optimized for real time streaming
+        response = Response(
+            event_generator(last_chunk_id),
+            mimetype='text/event-stream'
+        )
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['X-Accel-Buffering'] = 'no'  # Critical for Nginx proxy stability
+        response.headers['Connection'] = 'keep-alive'
+        response.headers['Access-Control-Allow-Origin'] = '*'  # Permits cross-origin testing clients
+        
+        return response
 
 @api.route('/pop_latest_transcript')
 class PopLatestTranscript(Resource):
