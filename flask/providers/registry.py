@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 # and returns a concrete subclass of BaseProvider
 _PROVIDER_FACTORIES: Dict[str, Callable[[Dict[str, Any]], BaseProvider]] = {}
 
+# Fallback used when a tenant skips configuration entirely
+_DEFAULT_TRANSCRIPTION_FALLBACK: Dict[str, Any] = {
+    "provider_name": "whisper_local",
+    "config": {},
+}
+
+_DEFAULT_TRANSLATION_FALLBACK: Dict[str, Any] = {
+    "provider_name": "nllb_local",
+    "config": {},
+    "source_lang": "en",
+    "target_lang": "es",
+}
+
 
 def register_provider(
     name: str, 
@@ -138,17 +151,60 @@ class ProviderRegistry:
 
     def _resolve_instance(self, tenant_id: str, role: str) -> Optional[BaseProvider]:
         """
-        Thread-safe lazy-instantiation logic using Double-Checked Locking.
-        Resolves the instance specifically assigned to a given role ('transcription' or 'translation').
+        Thread-safe lazy-instantiation logic using Double-Checked Locking pattern.
         """
         # Fast, lock-free read
         tenant_entry = self._tenants.get(tenant_id)
+
         if not tenant_entry or not tenant_entry.get(role):
-            return None
+            if role == "transcription":
+                fallback_name = _DEFAULT_TRANSCRIPTION_FALLBACK["provider_name"]
+                if fallback_name not in _PROVIDER_FACTORIES:
+                    return None
+                with self._lock:
+                    # Double-checked locking
+                    if tenant_id not in self._tenants:
+                        self._tenants[tenant_id] = {"transcription": None, "translation": None}
+                    if not self._tenants[tenant_id].get("transcription"):
+                        logger.warning(
+                            f"[Registry] Tenant '{tenant_id}' has no transcription config — "
+                            f"falling back to default provider '{fallback_name}'. "
+                            "Call configure() to set up a full pipeline."
+                        )
+                        self._tenants[tenant_id]["transcription"] = {
+                            "provider_name": fallback_name,
+                            "config": _DEFAULT_TRANSCRIPTION_FALLBACK["config"],
+                            "instance": None,
+                        }
+                role_entry = self._tenants[tenant_id]["transcription"]
+            else:
+                if role == "translation":
+                    fallback_name = _DEFAULT_TRANSLATION_FALLBACK["provider_name"]
+                    if fallback_name not in _PROVIDER_FACTORIES:
+                        return None
+                    with self._lock:
+                        if tenant_id not in self._tenants:
+                            self._tenants[tenant_id] = {"transcription": None, "translation": None}
+                        if not self._tenants[tenant_id].get("translation"):
+                            logger.warning(
+                                f"[Registry] Tenant '{tenant_id}' has no translation config — "
+                                f"falling back to default provider '{fallback_name}'. "
+                                "Call configure() to set up a full pipeline."
+                            )
+                            self._tenants[tenant_id]["translation"] = {
+                                "provider_name": fallback_name,
+                                "config": _DEFAULT_TRANSLATION_FALLBACK["config"],
+                                "source_lang": _DEFAULT_TRANSLATION_FALLBACK["source_lang"],
+                                "target_lang": _DEFAULT_TRANSLATION_FALLBACK["target_lang"],
+                                "instance": None,
+                            }
+                    role_entry = self._tenants[tenant_id]["translation"]
+                else:
+                    return None
+        else:
+            role_entry = tenant_entry[role]
 
-        role_entry = tenant_entry[role]
-
-        # Lazy Instantiation with Double-Checked Locking block
+        # Lazy Instantiation with Double Checked Locking block
         if role_entry["instance"] is None:
             with self._lock:
                 # Re-verify inside the synchronized lock boundaries
