@@ -4,6 +4,7 @@ basic registry functionality for susi_translator.
 """
 
 from __future__ import annotations
+
 import pytest
 
 from providers.base import TranslationProvider, TranslationError, ProviderUnavailableError
@@ -22,6 +23,7 @@ class EchoProvider(TranslationProvider):
     def provider_name(self):
         return "echo"
 
+
 class UnavailableProvider(TranslationProvider):
     """Always reports itself as unavailable."""
     def translate(self, text, source_lang, target_lang, **kwargs):
@@ -33,6 +35,7 @@ class UnavailableProvider(TranslationProvider):
     @property
     def provider_name(self):
         return "unavailable"
+
 
 class KwargsCapturingProvider(TranslationProvider):
     """Stores the kwargs passed to translate() so tests can assert on them."""

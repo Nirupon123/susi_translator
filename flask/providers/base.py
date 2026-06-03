@@ -16,7 +16,7 @@ class TranslationError(Exception):
     """Base exception for all translation related failures"""
 
 
-class ProviderConfigError(Exception):
+class ProviderConfigError(TranslationError):
     """Raised when a provider is initialized with missing or malformed configuration"""
 
 
