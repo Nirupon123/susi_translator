@@ -109,6 +109,7 @@ class ProviderRegistry:
                     "provider_name": t_name,
                     "config": transcription.get("config", {}),
                     "instance": None,
+                    "ready": False,
                 }
                 logger.info(f"[Registry] Configured transcription module '{t_name}' for tenant '{tenant_id}'")
 
@@ -129,6 +130,7 @@ class ProviderRegistry:
                     "source_lang": translation.get("source_lang", "en"),
                     "target_lang": translation.get("target_lang", "es"),
                     "instance": None,
+                    "ready": False,
                 }
 
                 logger.info(f"[Registry] Configured translation module '{tx_name}' for tenant '{tenant_id}'")
@@ -149,6 +151,23 @@ class ProviderRegistry:
                 "in both slots. Consider using a single TranscriptionTranslationProvider slot instead."
             )
 
+    def is_pipeline_ready(self, tenant_id: str) -> bool:
+        """Checks if all configured background threads have fully loaded their models."""
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if not tenant:
+                return False
+            
+            t_ready = True
+            if tenant.get("transcription"):
+                t_ready = tenant["transcription"].get("ready", False)
+                
+            tx_ready = True
+            if tenant.get("translation"):
+                tx_ready = tenant["translation"].get("ready", False)
+                
+            return t_ready and tx_ready
+
     def _resolve_instance(self, tenant_id: str, role: str) -> Optional[BaseProvider]:
         """
         Thread-safe lazy-instantiation logic using Double-Checked Locking pattern.
@@ -156,7 +175,8 @@ class ProviderRegistry:
         # Fast, lock-free read
         tenant_entry = self._tenants.get(tenant_id)
 
-        if not tenant_entry or not tenant_entry.get(role):
+        # Trigger fallback if the entry is missing OR if the provider_name is blank/None
+        if not tenant_entry or not tenant_entry.get(role) or not tenant_entry[role].get("provider_name"):
             if role == "transcription":
                 fallback_name = _DEFAULT_TRANSCRIPTION_FALLBACK["provider_name"]
                 if fallback_name not in _PROVIDER_FACTORIES:
@@ -165,9 +185,9 @@ class ProviderRegistry:
                     # Double-checked locking
                     if tenant_id not in self._tenants:
                         self._tenants[tenant_id] = {"transcription": None, "translation": None}
-                    if not self._tenants[tenant_id].get("transcription"):
+                    if not self._tenants[tenant_id].get("transcription") or not self._tenants[tenant_id]["transcription"].get("provider_name"):
                         logger.warning(
-                            f"[Registry] Tenant '{tenant_id}' has no transcription config — "
+                            f"[Registry] Tenant '{tenant_id}' has no valid transcription config — "
                             f"falling back to default provider '{fallback_name}'. "
                             "Call configure() to set up a full pipeline."
                         )
@@ -177,30 +197,29 @@ class ProviderRegistry:
                             "instance": None,
                         }
                 role_entry = self._tenants[tenant_id]["transcription"]
-            else:
-                if role == "translation":
-                    fallback_name = _DEFAULT_TRANSLATION_FALLBACK["provider_name"]
-                    if fallback_name not in _PROVIDER_FACTORIES:
-                        return None
-                    with self._lock:
-                        if tenant_id not in self._tenants:
-                            self._tenants[tenant_id] = {"transcription": None, "translation": None}
-                        if not self._tenants[tenant_id].get("translation"):
-                            logger.warning(
-                                f"[Registry] Tenant '{tenant_id}' has no translation config — "
-                                f"falling back to default provider '{fallback_name}'. "
-                                "Call configure() to set up a full pipeline."
-                            )
-                            self._tenants[tenant_id]["translation"] = {
-                                "provider_name": fallback_name,
-                                "config": _DEFAULT_TRANSLATION_FALLBACK["config"],
-                                "source_lang": _DEFAULT_TRANSLATION_FALLBACK["source_lang"],
-                                "target_lang": _DEFAULT_TRANSLATION_FALLBACK["target_lang"],
-                                "instance": None,
-                            }
-                    role_entry = self._tenants[tenant_id]["translation"]
-                else:
+            elif role == "translation":
+                fallback_name = _DEFAULT_TRANSLATION_FALLBACK["provider_name"]
+                if fallback_name not in _PROVIDER_FACTORIES:
                     return None
+                with self._lock:
+                    if tenant_id not in self._tenants:
+                        self._tenants[tenant_id] = {"transcription": None, "translation": None}
+                    if not self._tenants[tenant_id].get("translation") or not self._tenants[tenant_id]["translation"].get("provider_name"):
+                        logger.warning(
+                            f"[Registry] Tenant '{tenant_id}' has no valid translation config — "
+                            f"falling back to default provider '{fallback_name}'. "
+                            "Call configure() to set up a full pipeline."
+                        )
+                        self._tenants[tenant_id]["translation"] = {
+                            "provider_name": fallback_name,
+                            "config": _DEFAULT_TRANSLATION_FALLBACK["config"],
+                            "source_lang": _DEFAULT_TRANSLATION_FALLBACK["source_lang"],
+                            "target_lang": _DEFAULT_TRANSLATION_FALLBACK["target_lang"],
+                            "instance": None,
+                        }
+                role_entry = self._tenants[tenant_id]["translation"]
+            else:
+                return None
         else:
             role_entry = tenant_entry[role]
 
@@ -237,6 +256,11 @@ class ProviderRegistry:
                 provider._load_model()
             elif hasattr(provider, '_lazy_load_model'):
                 provider._lazy_load_model()
+
+            with self._lock:
+                if tenant_id in self._tenants and self._tenants[tenant_id].get(role):
+                    self._tenants[tenant_id][role]["ready"] = True
+
             logger.info(f"[Registry] Warmup complete for [{role}] provider '{provider.provider_name}' tenant '{tenant_id}'")
         except Exception as e:
             logger.error(f"[Registry] Warmup failed for [{role}] tenant '{tenant_id}': {e}")

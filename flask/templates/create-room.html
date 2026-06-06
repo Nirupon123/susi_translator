@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}SUSI Translator - Rooms{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/create-room.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Rooms</h2>
+    <button class="create-room-btn" onclick="createRoom()">+ Create Room</button>
+</div>
+
+<div class="rooms-grid" id="rooms-grid">
+    
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lobby.js') }}"></script>
+{% endblock %}

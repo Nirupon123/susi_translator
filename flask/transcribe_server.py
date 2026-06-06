@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, abort, Response, stream_with_context
+from flask import Flask, request, jsonify, abort, Response, stream_with_context, render_template
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
@@ -57,8 +57,12 @@ def _env_csv(name: str, default: str) -> list:
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
+# api = Api(app, version='1.0', title='Transcription API',
+#           description='A simple Transcription API', doc='/swagger')
+
 api = Api(app, version='1.0', title='Transcription API',
-          description='A simple Transcription API', doc='/swagger')
+          description='A simple Transcription API', doc='/swagger',
+          serve_challenge_on_401=False)
 
 # CORS_ALLOWED_ORIGINS is a comma-separated list. Default is local-dev only.
 # Use "*" explicitly if (and only if) you really want to allow any origin.
@@ -443,6 +447,7 @@ def merge_and_split_transcripts(transcripts):
 # this model is used for the /configure endpoint, which allows clients to set up 
 # their preferred translation provider and its configuration for their session
 
+
 configure_input_model = api.model('ConfigureRequest', {
     'tenant_id': fields.String(required=True, description='Tenant ID for the session'),
     'transcription': fields.Raw(required=False, description='Dictionary containing provider_name and config for STT'),
@@ -497,6 +502,35 @@ session_response_model = api.model('SessionResponse', {
 })
 
 
+#frontend routes
+@app.route('/config/<tenant_id>')
+def config(tenant_id):
+    return render_template('config.html', tenant_id=tenant_id)
+
+
+@app.route('/config/<tenant_id>')
+def config_page(tenant_id):
+    return render_template('config.html', tenant_id=tenant_id)
+
+@app.route('/api/v1/translate/status/<tenant_id>', methods=['GET'])
+def check_pipeline_status(tenant_id):
+    """Frontend polls this endpoint to check if AI models are ready."""
+    if registry.is_pipeline_ready(tenant_id):
+        return {"status": "ready"}, 200
+    return {"status": "loading"}, 202
+
+
+@app.route('/stream/<tenant_id>')
+def stream_room(tenant_id):
+    """Renders the actual video streaming and live captioning room"""
+    video_url = request.args.get('url', '')
+    return render_template('stream.html', tenant_id=tenant_id, video_url=video_url)
+
+
+
+
+
+#server routes
 @api.route('/api/v1/translate/configure')
 class ConfigureProvider(Resource):
     @api.expect(configure_input_model)
@@ -1049,7 +1083,7 @@ if _env_bool('TRANSCRIBE_AUTOSTART_WORKER', True):
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
-
+app.add_url_rule('/home', 'index', lambda: render_template('create-room.html'))
 if __name__ == '__main__':
     # Server bind config is env-driven so the defaults are SAFE:
     #   - host defaults to 127.0.0.1 (loopback only)
