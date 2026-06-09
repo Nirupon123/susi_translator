@@ -29,7 +29,11 @@ function renderRooms() {
             </div>
         `;
         card.onclick = () => {
-            window.location.href = `/config/${room.tenant_id}`;
+            if (room.configured && room.videoUrl) {
+                window.location.href = `/stream/${room.tenant_id}?url=${encodeURIComponent(room.videoUrl)}`;
+            } else {
+                window.location.href = `/config/${room.tenant_id}`;
+            }
         };
         grid.appendChild(card);
     });
@@ -37,7 +41,13 @@ function renderRooms() {
 
 function openRoom(event, tenant_id) {
     event.stopPropagation();
-    window.location.href = `/config/${tenant_id}`;
+    let rooms = JSON.parse(localStorage.getItem('susi_rooms') || '[]');
+    let room = rooms.find(r => r.tenant_id === tenant_id);
+    if (room && room.configured && room.videoUrl) {
+        window.location.href = `/stream/${tenant_id}?url=${encodeURIComponent(room.videoUrl)}`;
+    } else {
+        window.location.href = `/config/${tenant_id}`;
+    }
 }
 
 function createRoom() {

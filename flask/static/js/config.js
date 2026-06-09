@@ -55,7 +55,8 @@ function onTranslationModelChange() {
 function _maskKeyField(inputEl) {
     inputEl.addEventListener('blur', () => {
         const realVal = inputEl.value;
-        if (realVal && !inputEl.dataset.realKey) {
+        // Only update if the field actually has a value and it's not currently showing the masked dots
+        if (realVal && inputEl.dataset.masked !== 'true') {
             inputEl.dataset.realKey = realVal;
             inputEl.value = '●'.repeat(Math.min(realVal.length, 24));
             inputEl.dataset.masked = 'true';
@@ -152,8 +153,17 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
                         clearInterval(pollInterval);
                         document.getElementById('loading-title').innerText = "Models Loaded!";
                         document.getElementById('loading-subtitle').innerText = "Entering Stream Room...";
-                        
                         setTimeout(() => {
+                            let rooms = JSON.parse(localStorage.getItem('susi_rooms') || '[]');
+                            rooms = rooms.map(r => {
+                                if (r.tenant_id === TENANT_ID) {
+                                    r.configured = true;
+                                    r.videoUrl = streamUrl;
+                                }
+                                return r;
+                            });
+                            localStorage.setItem('susi_rooms', JSON.stringify(rooms));
+
                             window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(streamUrl)}`);
                         }, 500);
                     }

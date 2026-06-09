@@ -1,19 +1,26 @@
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, redirect, url_for, render_template, Response
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, verify_jwt_in_request
+from flask_bcrypt import Bcrypt
 from werkzeug.exceptions import HTTPException
 import numpy as np
 import threading
-import requests
 import logging
 import base64
+import json
 import queue
 import time
 import uuid
-import wave
-import io
 import os
+import sys
+import subprocess
+import signal
+from datetime import timedelta
 from dotenv import load_dotenv
+
+from auth.routes import auth_bp, bcrypt
 
 
 
@@ -49,45 +56,33 @@ _cors_origins = _env_csv(
 CORS(app, resources={r"/*": {"origins": _cors_origins}})
 logger.info(f"CORS allowed origins: {_cors_origins}")
 
-# We either use a local in-code model or access a whisper.cpp server.
-use_whisper_server = _env_bool('WHISPER_SERVER_USE', False)
-_legacy_model = os.getenv('WHISPER_MODEL')
-model_fast_name = os.getenv('WHISPER_MODEL_FAST', _legacy_model or 'small')    # 244M
-model_smart_name = os.getenv('WHISPER_MODEL_SMART', _legacy_model or 'medium')  # 769M
-device = None
-whisper_server = os.getenv('WHISPER_SERVER', 'http://localhost:8007').rstrip('/')
+# --- Database, Auth, JWT ---
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///susi.db")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "change-me")
+app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+app.config["JWT_COOKIE_SECURE"] = False  # set True in production (HTTPS only)
+app.config["JWT_COOKIE_CSRF_PROTECT"] = False
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 
-# Models are only loaded when we are NOT using the whisper.cpp server.
-model_fast = None
-model_smart = None
+from auth.models import db
+db.init_app(app)
+JWTManager(app)
+bcrypt.init_app(app)
 
-if use_whisper_server:
-    logger.info(f"Whisper backend: server at {whisper_server}/inference")
-else:
-    import torch 
-    import whisper  
+# Register the auth blueprint (/auth/login, /auth/signup, /auth/api/*)
+app.register_blueprint(auth_bp)
 
-    logger.info("TORCH CUDA: %s", torch.cuda.is_available())
-    logger.info("DEVICE COUNT: %s", torch.cuda.device_count())
-    logger.info(f"Hardware detection: using {device}")
+# Create DB tables if they don't exist yet (safe no-op if already created)
+with app.app_context():
+    db.create_all()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    models_path = os.path.join(script_dir, 'models')
-
-    def _load_whisper_model(name: str):
-        local_pt = os.path.join(models_path, name + ".pt")
-        if os.path.exists(local_pt):
-            return whisper.load_model(name, device=device, in_memory=True, download_root=models_path)
-        return whisper.load_model(name, device=device, in_memory=True)
-
-    logger.info(f"Whisper backend: local models fast={model_fast_name}, smart={model_smart_name}")
-    model_fast = _load_whisper_model(model_fast_name)
-    model_smart = _load_whisper_model(model_smart_name)
+# Load all provider plugins — registers whisper_local, groq_whisper, nllb_local, groq_llama
+# into the ProviderRegistry factory table before any request arrives.
+import providers.plugins  # noqa: F401  (side-effect import)
 
 
-# ---------------------------------------------------------------------------
 # Shared in-memory state
-# ---------------------------------------------------------------------------
 
 registry = ProviderRegistry()
 
@@ -95,17 +90,13 @@ registry = ProviderRegistry()
 transcriptd = {}
 transcripts_lock = threading.Lock()
 
+grabber_processes = {}  # tenant_id -> subprocess.Popen
+grabber_lock = threading.Lock()
+
 # FIFO queue of pending audio chunks awaiting transcription.
 audio_stack = queue.Queue()
 
-# Per-source "latest session" registry.
-# Each grabber run calls POST /session?source=<mic|file|url|stdin> at startup;
-# the server mints a fresh tenant_id (uuid) and remembers it as the latest
-# tenant_id for that source along with a creation timestamp. Read endpoints
-# accept ?source=<name> as a convenience that resolves to the latest active
-# tenant_id for that source, so the user never has to type or remember the
-# uuid in curl commands. Stale sessions (older than SESSION_TTL_SECONDS)
-# are evicted on resolve.
+# Per-source "latest session" registry
 VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube"}
 latest_session_by_source = {s: None for s in VALID_SOURCES}  # source -> (tenant_id, created_ts) or None
 session_lock = threading.Lock()
@@ -115,12 +106,7 @@ SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
 # Small helpers
 
 def _parse_int_arg(args, name: str, default: int = None, required: bool = False) -> int:
-    """
-    Parse a query-string argument as an int. On invalid input, abort with HTTP
-    400 instead of letting `int()` raise and be turned into a 500.
-
-    Returns ``default`` if the argument is missing and not required.
-    """
+    
     raw = args.get(name)
     if raw is None or raw == "":
         if required:
@@ -133,11 +119,7 @@ def _parse_int_arg(args, name: str, default: int = None, required: bool = False)
 
 
 def _chunk_id_int(k):
-    """
-    Best-effort int() of a chunk_id. Returns ``None`` for keys that cannot
-    be interpreted as integers, so callers can defensively skip them
-    rather than crashing the endpoint with a 500.
-    """
+   
     try:
         return int(k)
     except (TypeError, ValueError):
@@ -145,11 +127,7 @@ def _chunk_id_int(k):
 
 
 def _numeric_sorted_keys(transcripts, reverse: bool = False) -> list:
-    """
-    Return the chunk_ids of ``transcripts`` sorted numerically, skipping
-    any that can't be parsed as ints. Used by every endpoint that does
-    "first" / "latest" / range-filtered lookups.
-    """
+  
     pairs = []
     for k in transcripts.keys():
         n = _chunk_id_int(k)
@@ -160,25 +138,12 @@ def _numeric_sorted_keys(transcripts, reverse: bool = False) -> list:
 
 
 def _in_chunk_range(k, fromid: int, untilid: int) -> bool:
-    """``True`` iff ``k`` parses to an int and lies within [fromid, untilid]."""
     n = _chunk_id_int(k)
     return n is not None and fromid <= n <= untilid
 
 
 def _resolve_tenant(args, default='0000'):
-    """
-    Resolve which tenant_id a read request is targeting.
-
-    Priority:
-      1. Explicit ?tenant_id=<id> wins (covers manual override / debugging).
-      2. ?source=<mic|file|url|stdin|youtube> resolves to the most recently
-         registered, non-expired session for that source. An unknown
-         source value aborts with HTTP 400 so client typos surface
-         loudly instead of masquerading as "no transcripts yet". A known
-         source with no active session returns None so the caller can
-         short-circuit with an empty response.
-      3. Fall back to ``default`` (legacy behaviour).
-    """
+   
     explicit = args.get('tenant_id')
     if explicit:
         return explicit
@@ -204,40 +169,10 @@ def _resolve_tenant(args, default='0000'):
     return default
 
 
-def _pcm_int16_to_wav_bytes(pcm: np.ndarray, sample_rate: int = 16000) -> bytes:
-    """
-    Wrap a mono 16-bit PCM numpy array in a minimal RIFF/WAV container so it
-    can be POSTed to whisper.cpp's /inference endpoint, which insists on a
-    real audio file (raw PCM bytes will be rejected).
-    """
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm.astype(np.int16, copy=False).tobytes())
-    return buf.getvalue()
 
-
-def _whisper_server_transcribe(audio_int16: np.ndarray) -> dict:
-    """
-    POST a single chunk to whisper.cpp's /inference endpoint and return its
-    JSON-decoded body. Raises requests.RequestException on transport errors.
-    """
-    wav_bytes = _pcm_int16_to_wav_bytes(audio_int16)
-    files = {'file': ('audio.wav', wav_bytes, 'audio/wav')}
-    data = {'response_format': 'json'}
-    inference_url = whisper_server + '/inference'
-    response = requests.post(inference_url, files=files, data=data, timeout=60)
-    response.raise_for_status()
-    return response.json()
 
 def _next_payload():
-    """
-    Pull the next audio payload from ``audio_stack``, dropping any superseded
-    duplicates so we only transcribe the latest version of each
-    (tenant_id, chunk_id).
-    """
+    
     tenant_id, chunk_id, audiob64 = audio_stack.get()
     while True:
         with audio_stack.mutex:
@@ -270,25 +205,10 @@ def process_audio():
                 logger.warning(f"NaN values in audio array for chunk_id {chunk_id}")
                 continue
 
-            qsize = audio_stack.qsize()
-            if use_whisper_server:
-                # Whisper.cpp server doesn't expose a fast/smart distinction;
-                # send everything to /inference. The server itself decides
-                # how to schedule it.
-                try:
-                    result = _whisper_server_transcribe(audio_int16)
-                except requests.RequestException as exc:
-                    logger.error(f"Whisper server error for chunk_id {chunk_id}: {exc}")
-                    continue
-            else:
-                # Local-model branch: torch was already imported at module
-                # load time when use_whisper_server=False, so this is cheap.
-                import torch 
-                model = model_fast if qsize > 20 else model_smart
-                audio_tensor = torch.from_numpy(audio_float32)
-                result = model.transcribe(audio_tensor, temperature=0)
-
-            transcript = (result.get('text') or '').strip()
+            transcript = registry.transcribe(tenant_id, audio_float32)
+            if transcript is None:
+                logger.warning(f"Transcription provider unavailable for chunk_id {chunk_id}")
+                continue
 
             if is_valid(transcript):
                 logger.info(f"VALID transcript for chunk_id {chunk_id}: {transcript}")
@@ -323,9 +243,9 @@ def is_valid(transcript):
     has_ascii_char = any(32 < ord(char) < 128 for char in transcript)
 
     # Check for forbidden words (case insensitive)
-    forbidden_phrases = {"thank you", "bye!", "thanks for watching", "click, click", "click click", "cough cough", "뉴", "스", "김", "수", "근", "입", "니", "다"}
+    forbidden_phrases = {"click, click", "click click", "cough cough", "뉴", "스", "김", "수", "근", "입", "니", "다"}
     contains_forbidden_phrases = any(word in transcript_lower for word in forbidden_phrases)
-    forbidden_strings = {"eh.", "you", "bye.", "it's fine"}
+    forbidden_strings = {"eh.", "you", "it's fine"}
     is_forbidden_string = any(word == transcript_lower for word in forbidden_strings)
 
     # check if the transcript has words which are longer than 40 characters
@@ -487,39 +407,138 @@ session_response_model = api.model('SessionResponse', {
 def configure_provider():
     data = request.get_json(silent=True) or {}
 
-    # Extract tenant_id for isolation
     tenant_id = data.get("tenant_id")
     if not tenant_id:
         return jsonify({"status": "error", "message": "Missing 'tenant_id'"}), 400
 
-    provider_name = data.get("provider_name")
-    if not provider_name:
-        return jsonify({"status": "error", "message": "Missing 'provider_name'"}), 400
+    transcription = data.get("transcription")
+    translation = data.get("translation")
 
-    raw_config = data.get("config")
-    if raw_config is not None:
-        if not isinstance(raw_config, dict):
-            return jsonify({
-                "status": "error",
-                "message": "'config' must be a JSON object (dict), got: "
-                           + type(raw_config).__name__,
-            }), 400
-        config_kwargs = raw_config
-    else:
-        # Flat format: collect every key except the routing keys.
-        config_kwargs = {k: v for k, v in data.items()
-                         if k not in ("provider_name", "tenant_id")}
+    if not transcription and not translation:
+        return jsonify({
+            "status": "error",
+            "message": "At least one of 'transcription' or 'translation' must be provided.",
+        }), 400
 
     try:
-        registry.configure(tenant_id=tenant_id, provider_name=provider_name, **config_kwargs)
+        registry.configure(
+            tenant_id=tenant_id,
+            transcription=transcription,
+            translation=translation,
+        )
+        configured = []
+        if transcription:
+            configured.append(f"transcription='{transcription.get('provider_name')}'")
+        if translation:
+            configured.append(f"translation='{translation.get('provider_name')}'")
+
+        stream_url = data.get("stream_url")
+        if stream_url:
+            logger.info(f"Spawning audio_grabber for tenant {tenant_id} on url {stream_url}")
+            cmd = [
+                sys.executable,
+                "audio_grabber.py",
+                "--tenant", tenant_id,
+                "youtube",
+                "--url", stream_url
+            ]
+            proc = subprocess.Popen(
+                cmd, 
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                preexec_fn=os.setsid
+            )
+            with grabber_lock:
+                grabber_processes[tenant_id] = proc
+
         return jsonify({
             "status": "success",
-            "message": f"Provider '{provider_name}' configured successfully for tenant '{tenant_id}'.",
+            "message": f"Configured {', '.join(configured)} for tenant '{tenant_id}'.",
         }), 200
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     except Exception as e:
         return jsonify({"status": "error", "message": f"Configuration failed: {str(e)}"}), 500
+
+
+@app.route('/api/v1/translate/stream', methods=['GET'])
+def translate_stream():
+    """
+    SSE Endpoint for real-time captions.
+    Streams back new transcripts (and on-the-fly translations) as they arrive.
+    """
+    tenant_id = _resolve_tenant(request.args)
+    target_lang = request.args.get('target_lang')
+    last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
+
+    def event_stream():
+        sent_transcripts = {}
+        yield f"data: {json.dumps({'status': 'connected'})}\n\n"
+
+        while True:
+            with transcripts_lock:
+                tenant_transcripts = dict(transcriptd.get(tenant_id, {}))
+            
+            new_chunks = []
+            for cid in _numeric_sorted_keys(tenant_transcripts):
+                cid_int = _chunk_id_int(cid)
+                if cid_int >= last_chunk_id:
+                    text = tenant_transcripts[cid]['transcript']
+                    if sent_transcripts.get(cid) != text:
+                        new_chunks.append((cid, text))
+                        sent_transcripts[cid] = text
+            
+            for cid, text in new_chunks:
+                translation = ""
+                if target_lang:
+                    try:
+                        lang_config = registry.get_language_config(tenant_id)
+                        source_lang = lang_config.get('source_lang', 'en')
+                        translation = registry.translate(tenant_id, text, source_lang, target_lang)
+                    except Exception as e:
+                        logger.error(f"Stream translation error for {tenant_id}: {e}")
+                
+                payload = {
+                    "chunk_id": cid,
+                    "transcript": text,
+                    "translation": translation
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+            
+            time.sleep(0.2)
+
+    return Response(event_stream(), mimetype="text/event-stream")
+
+
+@app.route('/stop_event/<tenant_id>', methods=['POST'])
+def stop_event(tenant_id):
+    """Kills background workers, clears memory, and deletes transcripts for a room."""
+    with grabber_lock:
+        proc = grabber_processes.pop(tenant_id, None)
+        if proc:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=3)
+            except Exception as e:
+                logger.error(f"Error killing grabber for {tenant_id}: {e}")
+
+    registry.remove(tenant_id)
+
+    with transcripts_lock:
+        transcriptd.pop(tenant_id, None)
+        
+    return jsonify({"status": "success", "message": f"Event {tenant_id} stopped"}), 200
+
+
+@app.route('/api/v1/translate/status/<tenant_id>', methods=['GET'])
+def provider_status(tenant_id):
+    """
+    Check if the models for a given tenant are fully loaded and ready.
+    The frontend polls this during the loading screen.
+    """
+    if registry.is_pipeline_ready(tenant_id):
+        return jsonify({"status": "ready"}), 200
+    else:
+        return jsonify({"status": "warming_up"}), 200
 
 
 @api.route('/session')
@@ -927,6 +946,48 @@ def _start_worker_once():
 
 if _env_bool('TRANSCRIBE_AUTOSTART_WORKER', True):
     _start_worker_once()
+
+
+# ---------------------------------------------------------------------------
+# Page routes (web UI)
+# ---------------------------------------------------------------------------
+
+def _require_login():
+    """Return a redirect to /auth/login if the request has no valid JWT cookie."""
+    try:
+        verify_jwt_in_request(locations=["cookies"])
+        return None  # authenticated — let the view proceed
+    except Exception:
+        return redirect(url_for("auth.login_page"))
+
+
+@app.route("/home")
+def home():
+    """Dashboard / lobby — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    return render_template("create-room.html")
+
+
+@app.route("/config/<tenant_id>")
+def config_page(tenant_id: str):
+    """Room configuration page — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    return render_template("config.html", tenant_id=tenant_id)
+
+
+@app.route("/stream/<tenant_id>")
+def stream_page(tenant_id: str):
+    """Live stream / caption viewer page — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    video_url = request.args.get("url", "")
+    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url)
+
 
 
 if __name__ == '__main__':

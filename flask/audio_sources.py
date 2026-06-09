@@ -104,7 +104,7 @@ class AudioSource(ABC):
     SAMPLE_RATE: int = 16000
     SAMPLE_WIDTH: int = 2  # 16-bit
     CHANNELS: int = 1
-    CHUNK_BYTES: int = SAMPLE_RATE * SAMPLE_WIDTH  # 1 second of audio
+    CHUNK_BYTES: int = (SAMPLE_RATE * SAMPLE_WIDTH) // 2  # 0.5 seconds of audio
 
     @abstractmethod
     def start(self) -> None:
