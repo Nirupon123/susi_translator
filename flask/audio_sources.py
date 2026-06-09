@@ -1,26 +1,17 @@
 """
 Audio source abstractions for the SUSI Translator audio grabber.
 
-This module defines an ``AudioSource`` abstract base class plus four concrete
+This module defines an ``AudioSource`` abstract base class plus five concrete
 implementations:
 
     - ``MicrophoneSource`` : live capture from a system microphone (PyAudio).
     - ``FileSource``       : decode a local audio file (pydub; requires ffmpeg).
     - ``URLSource``        : decode a remote HTTP(S) audio stream (ffmpeg).
     - ``StdinSource``      : read raw 16-bit / 16 kHz / mono PCM from stdin.
+    - ``YouTubeSource``    : decode a YouTube (Live or VOD) URL by piping
+                             ``yt-dlp``'s stdout straight into ``ffmpeg``.
 
 All sources MUST yield 16 kHz, 16-bit signed little-endian, mono PCM bytes.
-
-System requirements
--------------------
-- ``MicrophoneSource`` : PyAudio + a working input device.
-- ``FileSource``       : the ``pydub`` Python package and the ``ffmpeg``
-                         binary on PATH (pydub shells out to it for any
-                         non-WAV input).
-- ``URLSource``        : the ``ffmpeg`` binary on PATH.
-- ``StdinSource``      : none beyond the standard library. The caller is
-                         responsible for delivering audio in the required
-                         raw PCM format.
 
 Each source's ``read_chunk()`` yields ~1 second of audio per iteration
 (``CHUNK_BYTES`` bytes) so the orchestrator can apply uniform silence
@@ -34,28 +25,16 @@ import sys
 import time
 import queue
 from abc import ABC, abstractmethod
-from typing import Generator, Optional
+from typing import Generator, List, Optional
 from urllib.parse import urlparse
 
-
-# Protocols ffmpeg is permitted to use when decoding a remote URL. Anything
-# outside this set (notably ``file``, ``concat``, ``pipe``, ``subfile`` and
-# friends) could be abused to read local resources, so it is rejected via
-# ffmpeg's ``-protocol_whitelist`` option.
 _ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 _FFMPEG_PROTOCOL_WHITELIST: str = "http,https,tcp,tls,crypto"
+# deliberately *not* including ``http``/``https`` means a malicious upstream can't trick ffmpeg into chasing arbitrary URLs.
+_FFMPEG_PROTOCOL_WHITELIST_PIPE: str = "pipe,crypto"
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _read_up_to(stream, n: int) -> bytes:
-    """
-    Read up to ``n`` bytes from a binary stream, looping over short reads.
-
-    Returns fewer than ``n`` bytes only on EOF.
-    """
     buf = bytearray()
     while len(buf) < n:
         piece = stream.read(n - len(buf))
@@ -63,11 +42,6 @@ def _read_up_to(stream, n: int) -> bytes:
             break  # EOF
         buf.extend(piece)
     return bytes(buf)
-
-
-# ---------------------------------------------------------------------------
-# Abstract base class
-# ---------------------------------------------------------------------------
 
 class AudioSource(ABC):
     """
@@ -108,32 +82,18 @@ class AudioSource(ABC):
 
     @abstractmethod
     def stop(self) -> None:
-        """
-        Release the underlying resource.
-
-        MUST NOT raise even if ``start()`` was never called, and MUST be
-        safe to call multiple times.
-        """
+        """Stop / clean up the underlying resource. Safe to call multiple times."""
 
     @abstractmethod
     def read_chunk(self) -> Generator[bytes, None, None]:
-        """
-        Yield raw PCM frames in ~1-second chunks (``CHUNK_BYTES`` bytes
-        each, except possibly the last chunk for finite sources).
-        """
+        """Yield successive ~1-second chunks of PCM bytes until the source is exhausted or stop() is called."""
 
-    # Convenience context-manager support: ``with SomeSource(...) as src:``
     def __enter__(self) -> "AudioSource":
         self.start()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.stop()
-
-
-# ---------------------------------------------------------------------------
-# MicrophoneSource
-# ---------------------------------------------------------------------------
 
 class MicrophoneSource(AudioSource):
     """
@@ -144,11 +104,7 @@ class MicrophoneSource(AudioSource):
     - PyAudio installed (``pip install pyaudio``).
     - A working input device.
 
-    Yields 1-second chunks of 16 kHz / 16-bit / mono PCM bytes. PyAudio is
-    callback-driven, so internally we push frames into a queue and
-    ``read_chunk()`` drains the queue. This decouples the audio thread from
-    the orchestrator and gives the same pull-style generator interface as
-    the other sources.
+    Yields 1-second chunks of 16 kHz / 16-bit / mono PCM bytes. 
     """
 
     def __init__(self, input_device_index: Optional[int] = None) -> None:
@@ -157,11 +113,10 @@ class MicrophoneSource(AudioSource):
         self._stream = None  # type: ignore[assignment]
         self._queue: "queue.Queue[bytes]" = queue.Queue()
         self._running: bool = False
-        self._pa_continue: int = 0  # set on start() to pyaudio.paContinue
+        self._pa_continue: int = 0 # will be set to pyaudio.paContinue in start()
 
     def start(self) -> None:
-        # Imported lazily so that other sources work even if PyAudio is
-        # unavailable on the host (e.g. headless server with no audio libs).
+        # Imported lazily so that other sources work even if PyAudio is unavailable on the host (e.g. headless server with no audio libs).
         import pyaudio
 
         self._pa_continue = pyaudio.paContinue
@@ -178,7 +133,7 @@ class MicrophoneSource(AudioSource):
         self._running = True
         self._stream.start_stream()
 
-    def _callback(self, in_data, frame_count, time_info, status):  # type: ignore[no-untyped-def]
+    def _callback(self, in_data, frame_count, time_info, status):  
         # PyAudio callback signature is fixed; we just enqueue and continue.
         if self._running and in_data:
             self._queue.put(in_data)
@@ -195,8 +150,6 @@ class MicrophoneSource(AudioSource):
                 yield chunk
 
     def stop(self) -> None:
-        # Idempotent and exception-safe: must not raise even if start() was
-        # never called.
         self._running = False
         stream = self._stream
         audio = self._audio
@@ -223,11 +176,6 @@ class MicrophoneSource(AudioSource):
         except queue.Empty:
             pass
 
-
-# ---------------------------------------------------------------------------
-# FileSource
-# ---------------------------------------------------------------------------
-
 class FileSource(AudioSource):
     """
     Read audio from a local file (any format pydub/ffmpeg can decode).
@@ -238,9 +186,8 @@ class FileSource(AudioSource):
     - The ``ffmpeg`` binary on PATH (pydub shells out to it for any
       format other than WAV).
 
-    The file is decoded once on ``start()``, downmixed to mono, resampled
-    to 16 kHz, and converted to 16-bit signed PCM in memory.
-    ``read_chunk()`` then yields 1-second slices of that PCM buffer.
+    The file is decoded on start() and stored in memory. read_chunk()
+    returns 1-second PCM slices.
 
     Args
     ----
@@ -284,14 +231,10 @@ class FileSource(AudioSource):
         self._running = False
 
     def stop(self) -> None:
-        # No external resources to release; just clear state.
         self._running = False
         self._pcm = b""
 
 
-# ---------------------------------------------------------------------------
-# URLSource
-# ---------------------------------------------------------------------------
 
 class URLSource(AudioSource):
     """
@@ -302,9 +245,9 @@ class URLSource(AudioSource):
     -------------------
     - The ``ffmpeg`` binary on PATH.
 
-    ``ffmpeg`` is invoked once on ``start()`` and produces a continuous
-    stream of 16 kHz / 16-bit / mono PCM on stdout. ``read_chunk()`` reads
-    1 second per iteration until ffmpeg exits or ``stop()`` is called.
+    On start(), ffmpeg converts the stream to 16 kHz, 16-bit mono PCM.
+    read_chunk() returns 1-second PCM chunks until the stream ends or
+    stop() is called.
     """
 
     def __init__(self, url: str) -> None:
@@ -315,20 +258,11 @@ class URLSource(AudioSource):
     @staticmethod
     def _validate_url(url: str) -> str:
         """
-        Enforce that ``url`` is a well-formed HTTP(S) URL before it is ever
-        handed to ffmpeg.
-
-        This is the first line of defence against the security audit
-        finding on the ``subprocess.Popen`` call below: by the time the
-        URL reaches ffmpeg we have already guaranteed it is not an option
-        flag (e.g. ``-something``) and not a non-network scheme such as
-        ``file://`` or ``concat:`` that could be used to read local
-        resources.
+        Validate that the URL is a safe HTTP/HTTPS network URL before passing it to ffmpeg.
         """
         if not isinstance(url, str) or not url:
             raise ValueError("URLSource: url must be a non-empty string")
         # Reject anything that could be parsed as an option flag by ffmpeg
-        # before the scheme check, just to be explicit.
         if url.startswith("-"):
             raise ValueError("URLSource: url must not start with '-'")
         parsed = urlparse(url)
@@ -342,12 +276,7 @@ class URLSource(AudioSource):
         return url
 
     def start(self) -> None:
-        # SECURITY: ``self._url`` has been validated by ``_validate_url`` to
-        # be an http(s) URL with a host and no leading ``-``. We invoke
-        # ffmpeg with a fixed argv list (``shell=False``) and additionally
-        # pass ``-protocol_whitelist`` so ffmpeg itself refuses any nested
-        # redirect to a non-network protocol. This addresses the static
-        # analysis warning about a non-static argument to ``subprocess.Popen``.
+        # SECURITY: self._url is validated, ffmpeg runs with shell=False and a protocol whitelist, preventing unsafe redirects and command injection.
         cmd = [
             "ffmpeg",
             "-loglevel", "error",
@@ -359,7 +288,10 @@ class URLSource(AudioSource):
             "-ar", str(self.SAMPLE_RATE),
             "-",  # write to stdout
         ]
-        self._proc = subprocess.Popen(  # noqa: S603  # validated argv, shell=False
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        # Safe: self._url is validated by _validate_url() (scheme whitelist,
+        # no leading '-', host required); argv is a fixed list with shell=False.
+        self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -397,25 +329,16 @@ class URLSource(AudioSource):
             except Exception:
                 pass
 
-
-# ---------------------------------------------------------------------------
-# StdinSource
-# ---------------------------------------------------------------------------
-
 class StdinSource(AudioSource):
     """
-    Read raw 16 kHz / 16-bit / mono PCM from standard input.
+    Read raw 16 kHz, 16-bit mono PCM audio from stdin.
 
-    Useful for piping arbitrary tools into the grabber, e.g.::
-
-        ffmpeg -i input.flac -f s16le -ac 1 -ar 16000 - | \\
+    Example:
+        ffmpeg -i input.flac -f s16le -ac 1 -ar 16000 - | \
             python audio_grabber.py stdin --server http://localhost:5040
 
-    System requirements
-    -------------------
-    None beyond the standard library. The caller is responsible for
-    delivering audio in the required raw PCM format; this source does no
-    decoding or resampling of its own.
+    The input must already be in the required PCM format; no decoding or
+    resampling is performed.
     """
 
     def __init__(self) -> None:
@@ -423,8 +346,7 @@ class StdinSource(AudioSource):
         self._stream = None  # type: ignore[assignment]
 
     def start(self) -> None:
-        # Use the underlying binary buffer to avoid newline translation
-        # on Windows.
+        # Use the underlying binary buffer to avoid newline translation on Windows.
         self._stream = sys.stdin.buffer
         self._running = True
 
@@ -440,6 +362,179 @@ class StdinSource(AudioSource):
         self._running = False
 
     def stop(self) -> None:
-        # We never own stdin; just clear state.
         self._running = False
         self._stream = None
+
+class YouTubeSource(AudioSource):
+    """
+    Decode a YouTube (Live or VOD) URL into the standard 16 kHz / 16-bit /
+    mono PCM stream by chaining two subprocesses::
+
+        yt-dlp -f <fmt> -o - <url>  |  ffmpeg -i pipe:0 ... -f s16le -
+
+    See the README for requirements (yt-dlp + ffmpeg on PATH) and cookie-based auth.
+    """
+
+    _ALLOWED_HOSTS: frozenset[str] = frozenset({
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
+    })
+
+    def __init__(
+        self,
+        url: str,
+        format_selector: str = "bestaudio/best",
+        cookies_path: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+    ) -> None:
+        # yt-dlp silently honours only one, so reject both up front.
+        if cookies_path and cookies_from_browser:
+            raise ValueError(
+                "YouTubeSource: pass at most one of cookies_path or "
+                "cookies_from_browser, not both"
+            )
+        self._watch_url: str = self._validate_url(url)
+        self._format_selector: str = format_selector
+        self._cookies_path: Optional[str] = cookies_path
+        self._cookies_from_browser: Optional[str] = cookies_from_browser
+        self._ydl_proc: Optional[subprocess.Popen] = None
+        self._ffmpeg_proc: Optional[subprocess.Popen] = None
+        self._running: bool = False
+
+
+    @classmethod
+    def _validate_url(cls, url: str) -> str:
+        """Reject bad input before any subprocess: must be an http(s) URL
+        with a recognised YouTube host and no leading ``-``."""
+        if not isinstance(url, str) or not url:
+            raise ValueError("YouTubeSource: url must be a non-empty string")
+        if url.startswith("-"):
+            raise ValueError("YouTubeSource: url must not start with '-'")
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+            raise ValueError(
+                f"YouTubeSource: unsupported URL scheme {parsed.scheme!r}; "
+                f"allowed schemes are {sorted(_ALLOWED_URL_SCHEMES)}"
+            )
+        if not parsed.netloc:
+            raise ValueError("YouTubeSource: url must include a host")
+        host = (parsed.hostname or "").lower()
+        if host not in cls._ALLOWED_HOSTS:
+            raise ValueError(
+                f"YouTubeSource: host {host!r} is not a recognised YouTube "
+                f"domain. Allowed hosts: {sorted(cls._ALLOWED_HOSTS)}"
+            )
+        return url
+
+
+    def _build_ydl_argv(self) -> List[str]:
+        # ``--`` before the URL ensures it can never be parsed as a flag.
+        argv: List[str] = [
+            "yt-dlp",
+            "--quiet",
+            "--no-warnings",
+            "--no-playlist",
+            "--no-progress",
+            "-f", self._format_selector,
+            "-o", "-",
+        ]
+        if self._cookies_path:
+            argv += ["--cookies", self._cookies_path]
+        elif self._cookies_from_browser:
+            argv += ["--cookies-from-browser", self._cookies_from_browser]
+        argv += ["--", self._watch_url]
+        return argv
+
+    def _build_ffmpeg_argv(self) -> List[str]:
+        return [
+            "ffmpeg",
+            "-loglevel", "error",
+            "-protocol_whitelist", _FFMPEG_PROTOCOL_WHITELIST_PIPE,
+            "-i", "pipe:0",
+            "-f", "s16le",
+            "-acodec", "pcm_s16le",
+            "-ac", str(self.CHANNELS),
+            "-ar", str(self.SAMPLE_RATE),
+            "-",
+        ]
+
+
+    def start(self) -> None:
+        # SECURITY: validated URL + fixed argv + shell=False; ffmpeg's input is a local pipe, hence the pipe-only protocol whitelist.
+        ydl_argv = self._build_ydl_argv()
+        ff_argv = self._build_ffmpeg_argv()
+
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        # Safe: URL validated by _validate_url() (YouTube host whitelist, no
+        # leading '-'); argv built from fixed flags with '--' before the URL,
+        # shell=False.
+        self._ydl_proc = subprocess.Popen(
+            ydl_argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=None,  # inherit: errors print to console
+            shell=False,
+        )
+
+        try:
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            # Safe: fixed argv, input is the local yt-dlp pipe, pipe-only
+            # protocol whitelist, shell=False.
+            self._ffmpeg_proc = subprocess.Popen(
+                ff_argv,
+                stdin=self._ydl_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+            )
+        except Exception:
+            # Don't leave yt-dlp orphaned if ffmpeg fails to spawn.
+            self._terminate_procs()
+            raise
+
+        if self._ydl_proc.stdout is not None:
+            try:
+                self._ydl_proc.stdout.close()
+            except Exception:
+                pass
+
+        self._running = True
+
+    def read_chunk(self) -> Generator[bytes, None, None]:
+        chunk_bytes: int = self.CHUNK_BYTES
+        while self._running:
+            proc = self._ffmpeg_proc
+            if proc is None or proc.stdout is None:
+                break
+            buf = _read_up_to(proc.stdout, chunk_bytes)
+            if not buf:
+                break
+            yield buf
+        self._running = False
+
+    def _terminate_procs(self) -> None:
+        for attr in ("_ffmpeg_proc", "_ydl_proc"):
+            proc: Optional[subprocess.Popen] = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if proc is None:
+                continue
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def stop(self) -> None:
+        self._running = False
+        self._terminate_procs()
