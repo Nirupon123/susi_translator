@@ -24,3 +24,4 @@ flask/tone.pcm
 *.pcm
 *.mp3
 flask/youtube_cookies.txt
+flask/instance/

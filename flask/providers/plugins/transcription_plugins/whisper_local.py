@@ -64,6 +64,22 @@ class WhisperLocalProvider(TranscriptionProvider):
         logger.info(
             f"[whisper_local] Loading model='{self._model_size}' on device='{device}'"
         )
+        
+        # --- Monkey patch urllib to bypass strict OpenSSL 3.0 EOF checks during whisper model download ---
+        import urllib.request
+        import ssl
+        original_urlopen = urllib.request.urlopen
+        def urlopen_patch(*args, **kwargs):
+            if 'context' not in kwargs or kwargs['context'] is None:
+                ctx = ssl.create_default_context()
+                ctx.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF", 0)
+                ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT
+                kwargs['context'] = ctx
+            return original_urlopen(*args, **kwargs)
+        
+        urllib.request.urlopen = urlopen_patch
+        # -------------------------------------------------------------------------------------------------
+
         try:
             self._model = whisper.load_model(self._model_size, device=device)
             logger.info(f"[whisper_local] Model '{self._model_size}' loaded successfully")

@@ -23,3 +23,12 @@ python-dotenv
 requests
 scipy
 torch
+flask-sqlalchemy
+flask-jwt-extended
+flask-bcrypt
+PyJWT
+groq
+httpx
+huggingface-hub
+transformers
+yt-dlp

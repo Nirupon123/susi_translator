@@ -57,7 +57,22 @@ import struct
 import sys
 import time
 import uuid
+import ssl
+from functools import wraps
 from typing import List, Optional
+
+# --- SSL Patch for Python 3.11 / OpenSSL 3.0 ---
+# Prevents strict EOF errors during HTTPS requests (e.g. yt-dlp)
+_orig_wrap_socket = ssl.SSLContext.wrap_socket
+
+@wraps(_orig_wrap_socket)
+def _patched_wrap_socket(self, sock, server_side=False, do_handshake_on_connect=True, suppress_ragged_eofs=True, server_hostname=None, session=None):
+    self.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF", 0x80000)
+    self.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    return _orig_wrap_socket(self, sock, server_side, do_handshake_on_connect, suppress_ragged_eofs, server_hostname, session)
+
+ssl.SSLContext.wrap_socket = _patched_wrap_socket
+# -----------------------------------------------
 
 import requests
 from requests.adapters import HTTPAdapter

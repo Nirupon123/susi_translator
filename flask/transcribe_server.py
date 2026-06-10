@@ -10,11 +10,25 @@ import threading
 import logging
 import base64
 import json
+import os
 import queue
+import signal
+import sys
+import threading
 import time
 import uuid
-import os
-import sys
+
+# --- GLOBAL SSL PATCH: bypass strict OpenSSL 3.0 EOF checks (fixes yt-dlp & Whisper crashes) ---
+import ssl
+orig_wrap_socket = ssl.SSLContext.wrap_socket
+def wrap_socket_patch(self, *args, **kwargs):
+    self.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF", 0)
+    self.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    return orig_wrap_socket(self, *args, **kwargs)
+ssl.SSLContext.wrap_socket = wrap_socket_patch
+# -----------------------------------------------------------------------------------------------
+
+from dataclasses import dataclass
 import subprocess
 import signal
 from datetime import timedelta
@@ -442,6 +456,12 @@ def configure_provider():
                 "youtube",
                 "--url", stream_url
             ]
+            
+            # Automatically use cookies file if provided in the instance volume
+            cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance", "youtubecookies.txt")
+            if os.path.exists(cookies_path):
+                logger.info(f"Using YouTube cookies file found at {cookies_path}")
+                cmd.extend(["--cookies", cookies_path])
             proc = subprocess.Popen(
                 cmd, 
                 cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -472,36 +492,59 @@ def translate_stream():
 
     def event_stream():
         sent_transcripts = {}
+        translated_transcripts = {}
+        last_translations = {}
+        last_translation_time = 0.0
+
         yield f"data: {json.dumps({'status': 'connected'})}\n\n"
 
         while True:
             with transcripts_lock:
                 tenant_transcripts = dict(transcriptd.get(tenant_id, {}))
             
-            new_chunks = []
+            now = time.time()
+            provider_name = registry.get_provider_name(tenant_id, "translation")
+            throttle_interval = 2.1 if provider_name and "groq" in provider_name.lower() else 0.0
+            can_translate = (now - last_translation_time) >= throttle_interval
+            
+            events_to_send = []
+
             for cid in _numeric_sorted_keys(tenant_transcripts):
                 cid_int = _chunk_id_int(cid)
                 if cid_int >= last_chunk_id:
                     text = tenant_transcripts[cid]['transcript']
-                    if sent_transcripts.get(cid) != text:
-                        new_chunks.append((cid, text))
-                        sent_transcripts[cid] = text
+                    
+                    needs_tx_update = sent_transcripts.get(cid) != text
+                    needs_tl_update = target_lang and (translated_transcripts.get(cid) != text)
+                    
+                    if needs_tx_update or needs_tl_update:
+                        translation = last_translations.get(cid, "")
+                        
+                        if needs_tl_update and can_translate:
+                            try:
+                                lang_config = registry.get_language_config(tenant_id)
+                                source_lang = lang_config.get('source_lang', 'en')
+                                new_tl = registry.translate(tenant_id, text, source_lang, target_lang)
+                                if new_tl:
+                                    translation = new_tl
+                                last_translations[cid] = translation
+                                translated_transcripts[cid] = text
+                                last_translation_time = time.time()
+                                can_translate = False  # Only 1 translation per loop to spread load
+                            except Exception as e:
+                                logger.error(f"Stream translation error for {tenant_id}: {e}")
+                                
+                        # We send an event if the transcription changed, 
+                        # or if we just successfully translated it to match the current transcription
+                        if needs_tx_update or (needs_tl_update and translated_transcripts.get(cid) == text):
+                            events_to_send.append({
+                                "chunk_id": cid,
+                                "transcript": text,
+                                "translation": translation
+                            })
+                            sent_transcripts[cid] = text
             
-            for cid, text in new_chunks:
-                translation = ""
-                if target_lang:
-                    try:
-                        lang_config = registry.get_language_config(tenant_id)
-                        source_lang = lang_config.get('source_lang', 'en')
-                        translation = registry.translate(tenant_id, text, source_lang, target_lang)
-                    except Exception as e:
-                        logger.error(f"Stream translation error for {tenant_id}: {e}")
-                
-                payload = {
-                    "chunk_id": cid,
-                    "transcript": text,
-                    "translation": translation
-                }
+            for payload in events_to_send:
                 yield f"data: {json.dumps(payload)}\n\n"
             
             time.sleep(0.2)

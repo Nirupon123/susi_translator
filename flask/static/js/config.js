@@ -71,6 +71,14 @@ function _maskKeyField(inputEl) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Auto-redirect if the room was already configured (e.g. user pressed back button)
+    let rooms = JSON.parse(localStorage.getItem('susi_rooms') || '[]');
+    let room = rooms.find(r => r.tenant_id === TENANT_ID);
+    if (room && room.configured && room.videoUrl) {
+        window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(room.videoUrl)}`);
+        return;
+    }
+
     _maskKeyField(document.getElementById('transcription-apikey'));
     _maskKeyField(document.getElementById('translation-apikey'));
 });

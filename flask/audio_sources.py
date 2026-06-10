@@ -580,7 +580,8 @@ class YouTubeSource(AudioSource):
             "skip_download": True,
             "js_runtimes": {"deno": {}, "node": {}},
             "remote_components": ["ejs:github"],
-            "extractor_args": {"youtube": ["player_client=android,ios"]},
+            "extractor_args": {"youtube": ["player_client=android,ios,web"]},
+            "legacyserverconnect": True,
         }
         # YouTube anti-bot bypass via cookies (mutex enforced in __init__).
         if self._cookies_path:
@@ -588,8 +589,20 @@ class YouTubeSource(AudioSource):
         elif self._cookies_from_browser:
             # yt-dlp expects a tuple (browser, [profile, keyring, container]).
             opts["cookiesfrombrowser"] = (self._cookies_from_browser,)
+        
+        info = None
         with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(self._watch_url, download=False)
+            for attempt in range(3):
+                try:
+                    info = ydl.extract_info(self._watch_url, download=False)
+                    break
+                except Exception as e:
+                    import time
+                    import logging
+                    logging.warning(f"yt-dlp extract failed (attempt {attempt+1}): {e}")
+                    if attempt == 2:
+                        raise
+                    time.sleep(1.5)
 
         media_url = info.get("url")
         if not media_url:
