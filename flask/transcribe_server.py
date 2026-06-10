@@ -1004,6 +1004,13 @@ def _require_login():
         return redirect(url_for("auth.login_page"))
 
 
+@app.before_request
+def redirect_root():
+    """Intercept root URL and forcefully redirect to home."""
+    if request.path == "/":
+        return redirect(url_for("home"))
+
+
 @app.route("/home")
 def home():
     """Dashboard / lobby — requires login."""

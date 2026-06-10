@@ -23,7 +23,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app
 COPY requirements.txt .
 
-RUN uv pip install --system --no-cache -r requirements.txt gunicorn gevent
+RUN uv venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN uv pip install --no-cache -r requirements.txt gunicorn gevent
 
 COPY . .
 

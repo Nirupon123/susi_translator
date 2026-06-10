@@ -493,6 +493,13 @@ class YouTubeSource(AudioSource):
     # through naive checks); we prefer an explicit list and let users
     # extend it via PR if they hit a legitimate host that's missing.
     _ALLOWED_HOSTS: frozenset[str] = frozenset({
+        "twitch.tv",
+        "www.twitch.tv",
+        "vimeo.com",
+        "www.vimeo.com",
+        "player.vimeo.com",
+        "archive.org",
+        "www.archive.org",
         "youtube.com",
         "www.youtube.com",
         "m.youtube.com",
@@ -580,7 +587,7 @@ class YouTubeSource(AudioSource):
             "skip_download": True,
             "js_runtimes": {"deno": {}, "node": {}},
             "remote_components": ["ejs:github"],
-            "extractor_args": {"youtube": ["player_client=android,ios,web"]},
+            "extractor_args": {"youtube": ["player_client=tv,mweb,web"]},
             "legacyserverconnect": True,
         }
         # YouTube anti-bot bypass via cookies (mutex enforced in __init__).
