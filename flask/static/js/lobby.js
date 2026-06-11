@@ -25,7 +25,10 @@ function renderRooms() {
             </div>
             <div class="room-card-footer">
                 <button class="view-btn" onclick="openRoom(event, '${room.tenant_id}')">Open →</button>
-                <button class="delete-btn" onclick="deleteRoom(event, '${room.tenant_id}')">Delete</button>
+                <div class="footer-actions">
+                    <button class="edit-btn" onclick="editRoom(event, '${room.tenant_id}')">Edit</button>
+                    <button class="delete-btn" onclick="deleteRoom(event, '${room.tenant_id}')">Delete</button>
+                </div>
             </div>
         `;
         card.onclick = () => {
@@ -48,6 +51,11 @@ function openRoom(event, tenant_id) {
     } else {
         window.location.href = `/config/${tenant_id}`;
     }
+}
+
+function editRoom(event, tenant_id) {
+    event.stopPropagation();
+    window.location.href = `/config/${tenant_id}?edit=true`;
 }
 
 function createRoom() {

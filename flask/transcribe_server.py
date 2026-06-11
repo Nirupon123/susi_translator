@@ -448,6 +448,24 @@ def configure_provider():
 
         stream_url = data.get("stream_url")
         if stream_url:
+            with grabber_lock:
+                old_proc = grabber_processes.pop(tenant_id, None)
+                if old_proc:
+                    try:
+                        logger.info(f"Killing existing audio_grabber for tenant {tenant_id} before respawning")
+                        os.killpg(os.getpgid(old_proc.pid), signal.SIGTERM)
+                        old_proc.wait(timeout=3)
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanly kill old grabber for {tenant_id}: {e}")
+
+            with transcripts_lock:
+                transcriptd.pop(tenant_id, None)
+
+            with audio_stack.mutex:
+                audio_stack.queue = type(audio_stack.queue)(
+                    [item for item in audio_stack.queue if item[0] != tenant_id]
+                )
+
             logger.info(f"Spawning audio_grabber for tenant {tenant_id} on url {stream_url}")
             cmd = [
                 sys.executable,

@@ -1,6 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
 
-    // 1. Embed the YouTube Video
+    //Embed the YouTube Video
     const ytPlayer = document.getElementById('yt-player');
 
     const extractYtId = (url) => {
@@ -36,7 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 2. SSE Connection — viewer-driven, reconnects when language changes
+    // SSE Connection — viewer-driven, reconnects when language changes
     const captionsBox = document.getElementById('captions-box');
     const statusText = document.getElementById('connection-status');
     const pulseDot = document.querySelector('.pulse-dot');
@@ -146,8 +146,45 @@ document.addEventListener('DOMContentLoaded', () => {
         connect();
     });
 
-    // 4. Clear Button
+    // Clear Button
     document.getElementById('clear-btn').addEventListener('click', () => {
         captionsBox.innerHTML = '';
+    });
+
+    // Download Button
+    document.getElementById('download-btn').addEventListener('click', () => {
+        let content = "Event Transcript and Translations\n";
+        content += "===================================\n\n";
+        
+        const blocks = captionsBox.querySelectorAll('.caption-block');
+        if (blocks.length === 0) {
+            alert("No transcripts available to download yet.");
+            return;
+        }
+
+        blocks.forEach(block => {
+            const tx = block.querySelector('.transcript-text').innerText.trim();
+            const tlEl = block.querySelector('.translation-text');
+            const tl = tlEl && tlEl.style.display !== 'none' ? tlEl.innerText.trim() : null;
+
+            if (tx) {
+                content += `[Original]: ${tx}\n`;
+                if (tl) {
+                    content += `[Translated]: ${tl}\n`;
+                }
+                content += "\n";
+            }
+        });
+
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const lang = langSelect.value ? `_${langSelect.value}` : '';
+        a.download = `room_${TENANT_ID}_transcript${lang}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     });
 });

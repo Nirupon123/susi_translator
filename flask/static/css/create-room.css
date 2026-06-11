@@ -53,7 +53,7 @@
     background-color: #ffffff;
     border: 1.5px solid #d8e3f5;
     border-radius: 12px;
-    width: 230px;
+    width: 270px;
     cursor: pointer;
     transition: box-shadow 0.2s, border-color 0.2s, transform 0.15s;
     display: flex;
@@ -105,12 +105,17 @@
     background: #f8faff;
 }
 
+.footer-actions {
+    display: flex;
+    gap: 8px;
+}
+
 /* ---- View button ---- */
 .view-btn {
     background-color: #4f8ef7;
     color: white;
     border: none;
-    padding: 7px 16px;
+    padding: 7px 12px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.85rem;
@@ -120,12 +125,30 @@
 }
 .view-btn:hover { background-color: #3a74e0; }
 
+/* ---- Edit button ---- */
+.edit-btn {
+    background-color: transparent;
+    color: #4f8ef7;
+    border: 1.5px solid #4f8ef7;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    font-family: 'Inter', Arial, sans-serif;
+    transition: background 0.15s, color 0.15s;
+}
+.edit-btn:hover {
+    background-color: #4f8ef7;
+    color: white;
+}
+
 /* ---- Delete button ---- */
 .delete-btn {
     background-color: transparent;
     color: #e53e3e;
     border: 1.5px solid #e53e3e;
-    padding: 6px 12px;
+    padding: 6px 10px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.8rem;

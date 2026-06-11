@@ -99,7 +99,7 @@
 <div id="loading-overlay" class="hidden">
     <div class="spinner"></div>
     <h3 id="loading-title">Warming up AI Models...</h3>
-    <p id="loading-subtitle">Allocating GPU memory and preparing pipelines. This takes a few seconds.</p>
+    <p id="loading-subtitle">Allocating memory and preparing pipelines. This takes a few seconds.</p>
 </div>
 {% endblock %}
 
@@ -107,5 +107,5 @@
 <script>
     const TENANT_ID = "{{ tenant_id }}";
 </script>
-<script src="{{ url_for('static', filename='js/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/config.js') }}?v=2"></script>
 {% endblock %}

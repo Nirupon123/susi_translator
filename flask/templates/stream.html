@@ -42,7 +42,7 @@
                 <div class="lang-selector-group">
                     <label for="viewer-lang-select">My Language</label>
                     <select id="viewer-lang-select">
-                        <option value=""> transcriptions only </option>
+                        <option value="">Original</option>
                         <option value="en">English</option>
                         <option value="de">German</option>
                         <option value="fr">French</option>
@@ -56,7 +56,7 @@
                         <option value="ko">Korean</option>
                         <option value="it">Italian</option>
                     </select>
-                </div>
+                <button id="download-btn" class="secondary-btn">Notes</button>
                 <button id="clear-btn" class="secondary-btn">Clear Text</button>
             </div>
         </div>
@@ -87,5 +87,5 @@
         history.replaceState(null, '', window.location.href);
     };
 </script>
-<script src="{{ url_for('static', filename='js/stream.js') }}"></script>
+<script src="{{ url_for('static', filename='js/stream.js') }}?v=3"></script>
 {% endblock %}
