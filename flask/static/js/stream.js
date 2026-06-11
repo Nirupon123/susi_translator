@@ -8,13 +8,31 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? match[1] : null;
     };
 
+    const extractTwitchId = (url) => {
+        const match = url.match(/(?:twitch\.tv\/)([^&?\/]+)/);
+        return match ? match[1] : null;
+    };
+
+    const extractVimeoId = (url) => {
+        const match = url.match(/(?:vimeo\.com\/)(?:channels\/(?:\w+\/)?|groups\/(?:[^\/]+\/)?videos\/|video\/|)(\d+)(?:|\/\?)/);
+        return match ? match[1] : null;
+    };
+
     if (VIDEO_URL) {
         const ytId = extractYtId(VIDEO_URL);
+        const twitchId = extractTwitchId(VIDEO_URL);
+        const vimeoId = extractVimeoId(VIDEO_URL);
+        
         if (ytId) {
             ytPlayer.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1`;
+        } else if (twitchId) {
+            const currentHost = window.location.hostname;
+            ytPlayer.src = `https://player.twitch.tv/?channel=${twitchId}&parent=${currentHost}&autoplay=true&muted=true`;
+        } else if (vimeoId) {
+            ytPlayer.src = `https://player.vimeo.com/video/${vimeoId}?autoplay=1&muted=1`;
         } else {
-            console.error("Invalid YouTube URL provided");
-            ytPlayer.parentElement.innerHTML = '<div style="padding: 40px; text-align: center; color: #ef4444;">Invalid YouTube URL. Cannot load video.</div>';
+            console.error("Invalid Video URL provided");
+            ytPlayer.parentElement.innerHTML = '<div style="padding: 40px; text-align: center; color: #ef4444;">Invalid Video URL. Cannot load video.</div>';
         }
     }
 

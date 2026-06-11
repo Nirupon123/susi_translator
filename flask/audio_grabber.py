@@ -241,21 +241,19 @@ def run(source: AudioSource, server: str, tenant_id: str) -> None:
     Drive one of the ``AudioSource`` implementations: read PCM in
     ~1-second chunks, apply silence-based buffering, and upload each
     running buffer to ``/transcribe``.
-
-    Logic mirrors the original ``audio_grabber.py``:
-
-    - On silence : drop the working buffer and rotate ``chunk_id`` (the
-      buffer most recently sent under the old chunk_id is treated as that
-      chunk's final state on the server).
-    - On speech  : extend the buffer and POST the running buffer under the
-      current chunk_id. The server overwrites prior versions of the same
-      chunk_id with this newer (longer) audio.
-    - When the buffer reaches ``BUFFER_SIZE`` : the chunk just sent is
-      considered final; rotate ``chunk_id`` and start fresh.
-
-    ``stop()`` on the source is invoked in a ``finally`` block, so partial
-    starts and mid-stream interrupts are safe.
     """
+    print("Waiting for transcription model to warm up...")
+    status_url = f"{server.rstrip('/')}/api/v1/translate/status/{tenant_id}"
+    while True:
+        try:
+            resp = requests.get(status_url, timeout=5)
+            if resp.status_code == 200 and resp.json().get("status") == "ready":
+                print("Model is ready!")
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+
     uploader = TranscribeUploader(server=server, tenant_id=tenant_id)
     buffer = bytearray()
     chunk_id: str = _new_chunk_id()

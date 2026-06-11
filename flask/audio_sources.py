@@ -597,6 +597,12 @@ class YouTubeSource(AudioSource):
             # yt-dlp expects a tuple (browser, [profile, keyring, container]).
             opts["cookiesfrombrowser"] = (self._cookies_from_browser,)
         
+        import os
+        proxy = os.getenv("YT_PROXY")
+        is_youtube = "youtube.com" in self._watch_url or "youtu.be" in self._watch_url
+        if proxy and is_youtube:
+            opts["proxy"] = proxy
+        
         info = None
         with YoutubeDL(opts) as ydl:
             for attempt in range(3):
