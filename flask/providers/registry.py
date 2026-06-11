@@ -141,9 +141,13 @@ class ProviderRegistry:
             self._tenants[tenant_id] = {"transcription": None, "translation": None}
 
             if transcription:
+                t_config = dict(transcription)
+                t_config.pop("provider_name", None)
+                t_config.update(t_config.pop("config", {}))
+
                 self._tenants[tenant_id]["transcription"] = {
                     "provider_name": t_name,
-                    "config": transcription.get("config", {}),
+                    "config": t_config,
                     "instance": None,
                     "ready": False,
                 }
@@ -160,9 +164,15 @@ class ProviderRegistry:
                 ).start()
 
             if translation:
+                tx_config = dict(translation)
+                tx_config.pop("provider_name", None)
+                tx_config.pop("source_lang", None)
+                tx_config.pop("target_lang", None)
+                tx_config.update(tx_config.pop("config", {}))
+
                 self._tenants[tenant_id]["translation"] = {
                     "provider_name": tx_name,
-                    "config": translation.get("config", {}),
+                    "config": tx_config,
                     "source_lang": translation.get("source_lang", "en"),
                     "target_lang": translation.get("target_lang", "es"),
                     "instance": None,
