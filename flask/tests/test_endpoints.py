@@ -142,7 +142,7 @@ def test_configure_endpoint_accepts_split_blocks(client) -> None:
     
     data = response.get_json()
     assert data["status"] == "success"
-    assert "Pipeline deployed successfully" in data["message"]
+    assert "Configured" in data["message"]
 
 
 def test_configure_endpoint_rejects_missing_tenant_id(client) -> None:
@@ -157,7 +157,7 @@ def test_configure_endpoint_rejects_missing_tenant_id(client) -> None:
     
     data = response.get_json()
     assert data["status"] == "error"
-    assert "Missing required field: tenant_id" in data["message"]
+    assert "Missing 'tenant_id'" in data["message"]
 
 
 def test_configure_endpoint_rejects_empty_blocks(client) -> None:
@@ -171,4 +171,4 @@ def test_configure_endpoint_rejects_empty_blocks(client) -> None:
     
     data = response.get_json()
     assert data["status"] == "error"
-    assert "Must provide at least a 'transcription' or 'translation'" in data["message"]
+    assert "At least one of 'transcription' or 'translation' must be provided" in data["message"]
