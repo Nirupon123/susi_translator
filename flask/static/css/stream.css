@@ -84,7 +84,7 @@ body {
    Left Column: Video Player
    ========================================================================== */
 .video-wrapper {
-    flex: 1 1 65%;
+    flex: 1 1 60%;
     aspect-ratio: 16 / 9;
     background-color: #f8faff;
     border-radius: 12px;
@@ -103,7 +103,7 @@ body {
    Right Column: Live Captions
    ========================================================================== */
 .captions-wrapper {
-    flex: 1 1 30%;
+    flex: 1 1 35%;
     background-color: #ffffff;
     border: 1.5px solid #d8e3f5;
     border-radius: 12px;
@@ -115,13 +115,12 @@ body {
 
 .captions-header {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-direction: column;
+    align-items: flex-start;
     padding: 14px 20px;
     background-color: #f8faff;
     border-bottom: 1.5px solid #d8e3f5;
-    flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
 }
 
 .captions-header h3 {
@@ -192,10 +191,80 @@ body {
     color: #4f8ef7;
 }
 
+/* Toggle Switch Styles */
+.audio-toggle-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: #ffffff;
+    border: 1.5px solid #d8e3f5;
+    padding: 4px 10px;
+    border-radius: 8px;
+}
+
+#audio-toggle-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #5a6a8a;
+    font-family: 'Inter', Arial, sans-serif;
+    min-width: 85px;
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+}
+
+.switch input { 
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #cbd5e1;
+    transition: .3s;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+}
+
+input:checked + .slider {
+    background-color: #16a34a;
+}
+
+input:checked + .slider:before {
+    transform: translateX(16px);
+}
+
+.slider.round {
+    border-radius: 34px;
+}
+
+.slider.round:before {
+    border-radius: 50%;
+}
+
 .captions-box {
     padding: 20px;
     height: 440px;
-    overflow-y: auto;
+    overflow-y: scroll; /* Changed to scroll so track is always visible */
     font-family: 'Inter', Arial, sans-serif;
     font-size: 1.05rem;
     line-height: 1.6;

@@ -5,10 +5,14 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_bcrypt import Bcrypt
 from werkzeug.exceptions import HTTPException
+from typing import Optional
 import numpy as np
 import threading
 import logging
+import collections
+import asyncio
 import base64
+import edge_tts
 import json
 import os
 import queue
@@ -67,7 +71,7 @@ _cors_origins = _env_csv(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5040,http://127.0.0.1:5040",
 )
-CORS(app, resources={r"/*": {"origins": _cors_origins}})
+CORS(app, resources={r"/*": {"origins": _cors_origins}})  # type: ignore[arg-type]  # flask-cors 6.x stubs are outdated
 logger.info(f"CORS allowed origins: {_cors_origins}")
 
 # --- Database, Auth, JWT ---
@@ -112,14 +116,50 @@ audio_stack = queue.Queue()
 
 # Per-source "latest session" registry
 VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube"}
-latest_session_by_source = {s: None for s in VALID_SOURCES}  # source -> (tenant_id, created_ts) or None
+latest_session_by_source: dict[str, Optional[tuple[str, float]]] = {s: None for s in VALID_SOURCES}  # source -> (tenant_id, created_ts) or None
 session_lock = threading.Lock()
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
 
 
+# --- TTS HELPER ---
+TTS_VOICES = {
+    "en": "en-US-AriaNeural",
+    "de": "de-DE-AmalaNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "es": "es-ES-ElviraNeural",
+    "hi": "hi-IN-SwaraNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "ar": "ar-EG-SalmaNeural",
+    "pt": "pt-BR-FranciscaNeural",
+    "ru": "ru-RU-SvetlanaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "ko": "ko-KR-SunHiNeural",
+    "it": "it-IT-ElsaNeural"
+}
+
+async def _get_tts(text, voice):
+    communicate = edge_tts.Communicate(text, voice)
+    audio_data = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+    return audio_data
+
+def generate_tts_sync(text, target_lang):
+    voice = TTS_VOICES.get(target_lang)
+    if not voice or not text.strip():
+        return None
+    try:
+        audio_bytes = asyncio.run(_get_tts(text, voice))
+        return base64.b64encode(audio_bytes).decode('utf-8')
+    except Exception as e:
+        logger.error(f"TTS Error: {e}")
+        return None
+
+
 # Small helpers
 
-def _parse_int_arg(args, name: str, default: int = None, required: bool = False) -> int:
+def _parse_int_arg(args, name: str, default: Optional[int] = None, required: bool = False) -> Optional[int]:
     
     raw = args.get(name)
     if raw is None or raw == "":
@@ -151,9 +191,9 @@ def _numeric_sorted_keys(transcripts, reverse: bool = False) -> list:
     return [k for _, k in pairs]
 
 
-def _in_chunk_range(k, fromid: int, untilid: int) -> bool:
+def _in_chunk_range(k, fromid: Optional[int], untilid: Optional[int]) -> bool:
     n = _chunk_id_int(k)
-    return n is not None and fromid <= n <= untilid
+    return n is not None and fromid is not None and untilid is not None and fromid <= n <= untilid
 
 
 def _resolve_tenant(args, default='0000'):
@@ -320,7 +360,7 @@ def merge_and_split_transcripts(transcripts):
     keys = list(transcripts.keys())
     for key in keys:
         raw = transcripts[key]
-        text = (raw.get('transcript') if isinstance(raw, dict) else str(raw or '')).strip()
+        text = ((raw.get('transcript') or '') if isinstance(raw, dict) else str(raw or '')).strip()
 
         if not merged:
             merged += text
@@ -495,7 +535,7 @@ def configure_provider():
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Configuration failed: {str(e)}"}), 500
+        return jsonify({"status": "error", "message": f"Configuration failed: {str(e)}", "traceback": str(e)}), 500
 
 
 @app.route('/api/v1/translate/stream', methods=['GET'])
@@ -506,11 +546,13 @@ def translate_stream():
     """
     tenant_id = _resolve_tenant(request.args)
     target_lang = request.args.get('target_lang')
+    want_audio = request.args.get('audio', 'false').lower() == 'true'
     last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
 
     def event_stream():
         sent_transcripts = {}
         translated_transcripts = {}
+        sent_audio = {}
         last_translations = {}
         last_translation_time = 0.0
 
@@ -529,7 +571,7 @@ def translate_stream():
 
             for cid in _numeric_sorted_keys(tenant_transcripts):
                 cid_int = _chunk_id_int(cid)
-                if cid_int >= last_chunk_id:
+                if cid_int is not None and cid_int >= (last_chunk_id or 0):
                     text = tenant_transcripts[cid]['transcript']
                     
                     needs_tx_update = sent_transcripts.get(cid) != text
@@ -555,15 +597,36 @@ def translate_stream():
                         # We send an event if the transcription changed, 
                         # or if we just successfully translated it to match the current transcription
                         if needs_tx_update or (needs_tl_update and translated_transcripts.get(cid) == text):
-                            events_to_send.append({
+                            payload = {
                                 "chunk_id": cid,
                                 "transcript": text,
                                 "translation": translation
-                            })
+                            }
+                            events_to_send.append(payload)
                             sent_transcripts[cid] = text
             
+            # 1. Yield all text updates instantly so the UI is real-time
             for payload in events_to_send:
                 yield f"data: {json.dumps(payload)}\n\n"
+                
+            # 2. Then generate and yield audio updates for those same chunks
+            for payload in events_to_send:
+                cid = payload["chunk_id"]
+                translation = payload.get("translation")
+                text = payload.get("transcript")
+                
+                if want_audio and translation and target_lang:
+                    if sent_audio.get(cid) != translation:
+                        audio_b64 = generate_tts_sync(translation, target_lang)
+                        if audio_b64:
+                            audio_payload = {
+                                "chunk_id": cid,
+                                "transcript": text,
+                                "translation": translation,
+                                "audio_b64": audio_b64
+                            }
+                            yield f"data: {json.dumps(audio_payload)}\n\n"
+                            sent_audio[cid] = translation
             
             time.sleep(0.2)
 
@@ -580,7 +643,8 @@ def stop_event(tenant_id):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 proc.wait(timeout=3)
             except Exception as e:
-                logger.error(f"Error killing grabber for {tenant_id}: {e}")
+                app.logger.warning(f"Error handling task for {tenant_id}: {e}")
+            audio_stack.task_done()
 
     registry.remove(tenant_id)
 
@@ -627,6 +691,7 @@ class Session(Resource):
 
             new_tenant_id = uuid.uuid4().hex
             with session_lock:
+                assert source is not None  # already validated above by `source not in VALID_SOURCES` check
                 latest_session_by_source[source] = (new_tenant_id, time.time())
 
             logger.info(f"New session for source={source}: tenant_id={new_tenant_id}")
@@ -732,7 +797,7 @@ class GetFirstTranscript(Resource):
             if sentences: t = merge_and_split_transcripts(t)
             fromid = _parse_int_arg(request.args, 'from', default=0)
             first_chunk_id = next(
-                (k for k in _numeric_sorted_keys(t) if _chunk_id_int(k) >= fromid),
+                (k for k in _numeric_sorted_keys(t) if (_chunk_id_int(k) or 0) >= (fromid or 0)),
                 None,
             )
             if first_chunk_id is None:
@@ -787,7 +852,7 @@ class PopFirstTranscript(Resource):
 
             view = merge_and_split_transcripts(stored) if sentences else stored
             first_chunk_id = next(
-                (k for k in _numeric_sorted_keys(view) if _chunk_id_int(k) >= fromid),
+                (k for k in _numeric_sorted_keys(view) if (_chunk_id_int(k) or 0) >= (fromid or 0)),
                 None,
             )
             if first_chunk_id is None:
@@ -824,7 +889,7 @@ class GetLatestTranscript(Resource):
             if sentences: t = merge_and_split_transcripts(t)
             untilid = _parse_int_arg(request.args, 'until', default=int(time.time() * 1000))
             latest_chunk_id = next(
-                (k for k in _numeric_sorted_keys(t, reverse=True) if _chunk_id_int(k) < untilid),
+                (k for k in _numeric_sorted_keys(t, reverse=True) if (_chunk_id_int(k) or 0) < (untilid or 0)),
                 None,
             )
             if latest_chunk_id is None:
@@ -879,7 +944,7 @@ class PopLatestTranscript(Resource):
 
             view = merge_and_split_transcripts(stored) if sentences else stored
             latest_chunk_id = next(
-                (k for k in _numeric_sorted_keys(view, reverse=True) if _chunk_id_int(k) < untilid),
+                (k for k in _numeric_sorted_keys(view, reverse=True) if (_chunk_id_int(k) or 0) < (untilid or 0)),
                 None,
             )
             if latest_chunk_id is None:

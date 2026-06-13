@@ -3,7 +3,7 @@
 {% block title %}SUSI Translator - Live Stream{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/stream.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/stream.css') }}?v=3" />
 {% endblock %}
 
 {% block content %}
@@ -56,8 +56,14 @@
                         <option value="ko">Korean</option>
                         <option value="it">Italian</option>
                     </select>
+                <div class="audio-toggle-wrapper">
+                    <label class="switch">
+                        <input type="checkbox" id="audio-toggle-checkbox">
+                        <span class="slider round"></span>
+                    </label>
+                    <span id="audio-toggle-label">Muted</span>
+                </div>
                 <button id="download-btn" class="secondary-btn">Notes</button>
-                <button id="clear-btn" class="secondary-btn">Clear Text</button>
             </div>
         </div>
         
@@ -87,5 +93,5 @@
         history.replaceState(null, '', window.location.href);
     };
 </script>
-<script src="{{ url_for('static', filename='js/stream.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='js/stream.js') }}?v=8"></script>
 {% endblock %}

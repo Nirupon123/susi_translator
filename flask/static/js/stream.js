@@ -48,9 +48,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let eventSource = null;
     let lastChunkId = 0;
+    
+    // Audio State
+    let playAudio = false;
+    let audioQueue = [];
+    let isPlaying = false;
+    let currentAudio = null;
+    let currentAudioId = null;
+
+    function stopAndClearAudio() {
+        audioQueue = [];
+        isPlaying = false;
+        if (currentAudio) {
+            currentAudio.pause();
+            currentAudio.currentTime = 0;
+            currentAudio = null;
+            currentAudioId = null;
+        }
+    }
 
     function buildSseUrl(targetLang) {
-        let url = `/api/v1/translate/stream?tenant_id=${TENANT_ID}&source=youtube&last_chunk_id=${lastChunkId}`;
+        let url = `/api/v1/translate/stream?tenant_id=${TENANT_ID}&source=youtube&last_chunk_id=${lastChunkId}&audio=${playAudio}`;
         if (targetLang) url += `&target_lang=${encodeURIComponent(targetLang)}`;
         return url;
     }
@@ -96,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 lastChunkId = chunkInt;
             }
 
-            // 3. Render transcript + translation blocks
+            // Render transcript + translation blocks
             let block = document.getElementById(`chunk-${data.chunk_id}`);
 
             if (!block) {
@@ -124,34 +142,91 @@ document.addEventListener('DOMContentLoaded', () => {
                 translEl.style.display = 'none';
             }
 
-            // Auto-scroll to bottom
+            // Push audio to queue if present
+            if (playAudio && data.audio_b64) {
+                const audioUrl = `data:audio/mp3;base64,${data.audio_b64}`;
+                
+                // Remove any pending audio in the queue for this exact chunk
+                audioQueue = audioQueue.filter(item => item.id !== data.chunk_id);
+                
+                // If we are currently playing an older version of this exact chunk, stop it
+                if (isPlaying && currentAudioId === data.chunk_id) {
+                    if (currentAudio) {
+                        currentAudio.pause();
+                        currentAudio.currentTime = 0;
+                        currentAudio = null;
+                    }
+                    isPlaying = false;
+                }
+                
+                // Add the new updated audio to the end of the queue
+                audioQueue.push({ id: data.chunk_id, url: audioUrl });
+                playNextAudio();
+            }
+
+            // Scroll to bottom
             captionsBox.scrollTop = captionsBox.scrollHeight;
         };
 
         eventSource.onerror = () => {
-            statusText.innerText = 'Connection Lost. Reconnecting...';
+            statusText.innerText = 'Connection Lost - Reconnecting...';
             pulseDot.classList.remove('connected');
+            pulseDot.classList.add('error');
         };
     }
+    
+    function playNextAudio() {
+        if (isPlaying || audioQueue.length === 0) return;
+        
+        isPlaying = true;
+        const nextItem = audioQueue.shift();
+        currentAudioId = nextItem.id;
+        currentAudio = new Audio(nextItem.url);
+        
+        currentAudio.onended = () => {
+            isPlaying = false;
+            currentAudio = null;
+            currentAudioId = null;
+            playNextAudio();
+        };
+        
+        currentAudio.onerror = () => {
+            console.error("Audio playback error");
+            isPlaying = false;
+            currentAudio = null;
+            currentAudioId = null;
+            playNextAudio();
+        };
+        
+        currentAudio.play().catch(e => {
+            console.error("Audio play blocked by browser:", e);
+            isPlaying = false;
+            currentAudio = null;
+            currentAudioId = null;
+            playNextAudio();
+        });
+    }
 
-    // Initial connection
+    // 1. Initial Connection
     connect();
 
     // Reconnect when viewer picks a different language.
     // We keep lastChunkId so they don't re-receive all old chunks,
-    // but existing rendered blocks stay on screen for context.
+    // but we clear the screen so languages don't mix.
     langSelect.addEventListener('change', () => {
+        stopAndClearAudio();
         const chosen = langSelect.value;
         localStorage.setItem(`susi_lang_${TENANT_ID}`, chosen);
+        
+        const captionsBox = document.getElementById('captions-box');
+        if (captionsBox) {
+            captionsBox.innerHTML = '<div class="system-msg">Switched language. Waiting for next sentence...</div>';
+        }
+        
         connect();
     });
 
-    // Clear Button
-    document.getElementById('clear-btn').addEventListener('click', () => {
-        captionsBox.innerHTML = '';
-    });
-
-    // Download Button
+    // 5. Download Button
     document.getElementById('download-btn').addEventListener('click', () => {
         let content = "Event Transcript and Translations\n";
         content += "===================================\n\n";
@@ -187,4 +262,23 @@ document.addEventListener('DOMContentLoaded', () => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     });
+
+    //Audio Toggle Switch
+    const audioToggleCheckbox = document.getElementById('audio-toggle-checkbox');
+    const audioToggleLabel = document.getElementById('audio-toggle-label');
+    
+    if (audioToggleCheckbox && audioToggleLabel) {
+        audioToggleCheckbox.addEventListener('change', (e) => {
+            playAudio = e.target.checked;
+            if (playAudio) {
+                audioToggleLabel.innerText = '🔊 TTS Active';
+                audioToggleLabel.style.color = '#16a34a'; // green
+            } else {
+                audioToggleLabel.innerText = '🔇 TTS Muted';
+                audioToggleLabel.style.color = '#5a6a8a';
+                stopAndClearAudio(); // Clear queue on mute
+            }
+            connect(); // reconnect to inform backend to start/stop generating audio
+        });
+    }
 });
