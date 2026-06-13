@@ -4,6 +4,7 @@ import os
 import sys
 
 import pytest
+from flask_jwt_extended import create_access_token
 
 # Make `flask/` importable so tests can `import transcribe_server`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,8 +42,36 @@ def ts():
     return ts_mod
 
 
+@pytest.fixture(autouse=True)
+def setup_db(ts):
+    """Ensure every test runs on a fresh, isolated in-memory database."""
+    ts.app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
+    with ts.app.app_context():
+        ts.db.create_all()
+        yield
+        ts.db.session.remove()
+        ts.db.drop_all()
+
+
 @pytest.fixture
-def client(ts):
+def unauth_client(ts):
+    """An unauthenticated test client."""
     ts.app.config["TESTING"] = True
     with ts.app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def client(ts):
+    """An automatically authenticated test client acting as an admin."""
+    ts.app.config["TESTING"] = True
+    with ts.app.test_client() as c:
+        with ts.app.app_context():
+            from auth.models import Organizer
+            user = Organizer(email="testadmin@localhost.com", password_hash="dummy", is_admin=True)
+            ts.db.session.add(user)
+            ts.db.session.commit()
+            
+            token = create_access_token(identity=user.email)
+            c.set_cookie('access_token_cookie', token)
         yield c

@@ -1,6 +1,9 @@
-from flask import Flask, request, jsonify, abort, Response
+from flask import Flask, request, jsonify, abort, Response, redirect, url_for, render_template
 from flask_restx import Api, Resource, fields
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, verify_jwt_in_request
+from flask_bcrypt import Bcrypt
 from werkzeug.exceptions import HTTPException
 import numpy as np
 import threading
@@ -18,11 +21,17 @@ import wave
 import io
 import os
 import atexit
+from datetime import timedelta
 from dotenv import load_dotenv
 
 
+from auth.routes import auth_bp, bcrypt
+from auth.decorators import organizer_required
+from flask_admin import Admin
+from auth.admin_panel import SecureModelView, SecureAdminIndexView
+
 from providers.registry import ProviderRegistry
-import providers.plugins  # Import to trigger provider registration
+import providers.plugins 
 
 
 # Load environment variables from .env file
@@ -44,9 +53,10 @@ def _env_csv(name: str, default: str) -> list:
 
 app = Flask(__name__)
 api = Api(app, version='1.0', title='Transcription API',
-          description='A simple Transcription API', doc='/swagger')
+          description='A simple Transcription API', doc='/swagger',
+          decorators=[organizer_required])
 
-#cors configurtion from .env file
+# CORS configuration from .env file
 _cors_origins = _env_csv(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5040,http://127.0.0.1:5040",
@@ -54,26 +64,53 @@ _cors_origins = _env_csv(
 CORS(app, resources={r"/*": {"origins": _cors_origins}})
 logger.info(f"CORS allowed origins: {_cors_origins}")
 
+# Database, Auth, JWT 
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///susi.db")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "change-me")
+app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+app.config["JWT_COOKIE_SECURE"] = False
+app.config["JWT_COOKIE_CSRF_PROTECT"] = False
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 
-#Shared in-memory state
+from auth.models import db
+db.init_app(app)
+JWTManager(app)
+bcrypt.init_app(app)
+
+# Register the auth blueprint (/auth/login, /auth/signup, /auth/api/*)
+app.register_blueprint(auth_bp)
+
+# Create DB tables if they don't exist yet (safe no-op if already created)
+with app.app_context():
+    db.create_all()
+
+# Initialize Flask-Admin
+from flask_admin.theme import Bootstrap4Theme
+admin = Admin(app, name='SUSI Admin', theme=Bootstrap4Theme(swatch='flatly'), url='/admin', index_view=SecureAdminIndexView())
+from auth.models import Organizer
+admin.add_view(SecureModelView(Organizer, db, name="Users/Organizers"))
+
+
+# Shared in-memory state
 registry = ProviderRegistry()
 
 transcriptd = {}
 transcripts_lock = threading.Lock()
 
 # Background audio grabber subprocesses, keyed by tenant_id.
-grabber_processes = {}  
+grabber_processes = {}
 grabber_lock = threading.Lock()
 
 # FIFO queue of pending audio chunks awaiting transcription.
 audio_stack = queue.Queue()
 VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube"}
-latest_session_by_source = {s: None for s in VALID_SOURCES} 
+latest_session_by_source = {s: None for s in VALID_SOURCES}
 session_lock = threading.Lock()
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
 
 
-#small helper functions
+# Small helper functions
 
 def _parse_int_arg(args, name: str, default: int = None, required: bool = False) -> int:
     """
@@ -163,7 +200,7 @@ def _next_payload():
             )
         if not has_newer:
             return tenant_id, chunk_id, audiob64
-        
+
         audio_stack.task_done()
         tenant_id, chunk_id, audiob64 = audio_stack.get()
 
@@ -217,7 +254,7 @@ def process_audio():
 
 
 def is_valid(transcript):
-    """Check if the transcript is valids, contains at least one ASCII character and no forbidden words."""
+    """Check if the transcript is valid: contains at least one ASCII character and no forbidden words."""
     transcript_lower = transcript.lower()
     # Check for at least one ASCII character with a code < 128 and code > 32 (we omit space in this case)
     has_ascii_char = any(32 < ord(char) < 128 for char in transcript)
@@ -310,7 +347,7 @@ def merge_and_split_transcripts(transcripts):
     return result
 
 
-# swagger and flask-restx models
+# Swagger and flask-restx models
 
 configure_input_model = api.model('ConfigureRequest', {
     'tenant_id': fields.String(required=True, description='Tenant ID for the session'),
@@ -578,8 +615,9 @@ def _transcripts_size_logic():
     t = {k: v for k, v in t.items() if _in_chunk_range(k, fromid, untilid)}
     return {'size': len(t)}
 
-#Provider configuration endpoint
+# Provider configuration endpoint
 @app.route('/api/v1/translate/configure', methods=['POST'])
+@organizer_required
 def configure_provider():
     """
     Configure transcription and/or translation providers for a tenant
@@ -651,9 +689,10 @@ def configure_provider():
 # SSE streaming endpoint
 
 @app.route('/api/v1/translate/stream', methods=['GET'])
+@organizer_required
 def translate_stream():
     """
-    server sent events endpoint for real time captions
+    Server-sent events endpoint for real-time captions
     """
     tenant_id = _resolve_tenant(request.args)
     target_lang = request.args.get('target_lang')
@@ -725,13 +764,14 @@ def translate_stream():
     return Response(event_stream(), mimetype="text/event-stream")
 
 
-# tenant lifecycle endpoints
+# Tenant lifecycle endpoints
 
 @app.route('/stop_event/<tenant_id>', methods=['POST'])
+@organizer_required
 def stop_event(tenant_id):
     """
-    Kills the background audio grabber , release provider slots, and
-    delete all in-memory transcripts for tenant_id.
+    Kills the background audio grabber, releases provider slots, and
+    deletes all in-memory transcripts for tenant_id.
     """
     with grabber_lock:
         proc = grabber_processes.pop(tenant_id, None)
@@ -751,6 +791,7 @@ def stop_event(tenant_id):
 
 
 @app.route('/api/v1/translate/status/<tenant_id>', methods=['GET'])
+@organizer_required
 def provider_status(tenant_id):
     """
     Check whether the models for a given tenant are fully loaded and ready.
@@ -985,7 +1026,7 @@ class DeleteTranscriptLegacy(Resource):
         return jsonify(_delete_transcript_logic(request.args.get('chunk_id')))
 
 
-# audio worker thread
+# Audio worker thread
 
 _worker_thread = None
 _worker_lock = threading.Lock()
@@ -1009,6 +1050,52 @@ def _start_worker_once():
 
 if _env_bool('TRANSCRIBE_AUTOSTART_WORKER', True):
     _start_worker_once()
+
+
+# Page routes all require a valid JWT cookie
+
+def _require_login():
+    """Return a redirect to /auth/login if the request has no valid JWT cookie."""
+    try:
+        verify_jwt_in_request(locations=["cookies"])
+        return None  # authenticated — let the view proceed
+    except Exception:
+        return redirect(url_for("auth.login_page"))
+
+
+@app.before_request
+def redirect_root():
+    """Intercept bare root URL and redirect to home."""
+    if request.path == "/":
+        return redirect(url_for("home"))
+
+
+@app.route("/home")
+def home():
+    """Dashboard / lobby — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    return render_template("create-room.html")
+
+
+@app.route("/config/<tenant_id>")
+def config_page(tenant_id: str):
+    """Room configuration page — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    return render_template("config.html", tenant_id=tenant_id)
+
+
+@app.route("/stream/<tenant_id>")
+def stream_page(tenant_id: str):
+    """Live stream / caption viewer page — requires login."""
+    redir = _require_login()
+    if redir:
+        return redir
+    video_url = request.args.get("url", "")
+    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url)
 
 
 if __name__ == '__main__':
