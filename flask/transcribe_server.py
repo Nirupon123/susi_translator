@@ -652,10 +652,14 @@ def configure_provider():
         stream_url = data.get("stream_url")
         if stream_url:
             logger.info(f"Spawning audio_grabber for tenant {tenant_id} on url {stream_url}")
+            from flask_jwt_extended import create_access_token
+            internal_token = create_access_token(identity="internal_grabber")
+        
             cmd = [
                 sys.executable,
                 "audio_grabber.py",
                 "--tenant", tenant_id,
+                "--auth-token", internal_token,
                 "youtube",
                 "--url", stream_url,
             ]

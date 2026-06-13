@@ -43,6 +43,7 @@ import struct
 import sys
 import time
 import uuid
+import http.cookiejar
 from typing import List, Optional
 
 import requests
@@ -80,7 +81,7 @@ def _is_silent(pcm_bytes: bytes) -> bool: # Return True if the loudest sample in
     peak = max(abs(s) for s in samples)
     return peak < SILENCE_THRESHOLD
 
-def _build_session() -> requests.Session: # Build a requests Session with retry/backoff for transient 5xx errors.
+def _build_session(auth_cookie_path: Optional[str] = None, auth_token: Optional[str] = None) -> requests.Session: # Build a requests Session with retry/backoff for transient 5xx errors.
     retry_policy = Retry(
         total=5,
         backoff_factor=1,
@@ -91,6 +92,18 @@ def _build_session() -> requests.Session: # Build a requests Session with retry/
     session = requests.Session()
     session.mount("http://", adapter)
     session.mount("https://", adapter)
+    
+    if auth_cookie_path:
+        cj = http.cookiejar.MozillaCookieJar(auth_cookie_path)
+        try:
+            cj.load(ignore_discard=True, ignore_expires=True)
+            session.cookies.update(cj)
+        except Exception as e:
+            print(f"Warning: could not load auth cookies from {auth_cookie_path}: {e}")
+            
+    if auth_token:
+        session.cookies.set("access_token_cookie", auth_token)
+
     return session
 
 
@@ -102,10 +115,10 @@ class TranscribeUploader:
         { "audio_b64": str, "chunk_id": str, "tenant_id": str }
     """
 
-    def __init__(self, server: str, tenant_id: str) -> None:
+    def __init__(self, server: str, tenant_id: str, auth_cookie_path: Optional[str] = None, auth_token: Optional[str] = None) -> None:
         self._url: str = server.rstrip("/") + "/transcripts"
         self._tenant_id: str = tenant_id
-        self._session: requests.Session = _build_session()
+        self._session: requests.Session = _build_session(auth_cookie_path, auth_token)
 
     def send(self, buffer: bytes, chunk_id: str) -> None:
         if not buffer:
@@ -142,7 +155,7 @@ def _new_chunk_id() -> str: #Return a fresh chunk_id (milliseconds since epoch).
     return str(int(time.time() * 1000))
 
 
-def _register_session(server: str, source: str) -> str:
+def _register_session(server: str, source: str, auth_cookie_path: Optional[str] = None, auth_token: Optional[str] = None) -> str:
     """
     Request a new tenant_id from the server.
 
@@ -151,8 +164,23 @@ def _register_session(server: str, source: str) -> str:
     the endpoint.
     """
     url = server.rstrip("/") + "/session"
+    cookies = None
+    if auth_cookie_path:
+        cj = http.cookiejar.MozillaCookieJar(auth_cookie_path)
+        try:
+            cj.load(ignore_discard=True, ignore_expires=True)
+            cookies = requests.cookies.RequestsCookieJar()
+            cookies.update(cj)
+        except Exception:
+            pass
+            
+    if auth_token:
+        if cookies is None:
+            cookies = requests.cookies.RequestsCookieJar()
+        cookies.set("access_token_cookie", auth_token)
+
     try:
-        response = requests.post(url, json={"source": source}, timeout=10)
+        response = requests.post(url, json={"source": source}, cookies=cookies, timeout=10)
         # /session returns 201 Created on the REST server; older servers returned 200. Accept both.
         if response.status_code in (200, 201):
             payload = response.json()
@@ -173,13 +201,13 @@ def _register_session(server: str, source: str) -> str:
     return uuid.uuid4().hex
 
 
-def run(source: AudioSource, server: str, tenant_id: str) -> None:
+def run(source: AudioSource, server: str, tenant_id: str, auth_cookie_path: Optional[str] = None, auth_token: Optional[str] = None) -> None:
     """
     Drive one of the ``AudioSource`` implementations: read PCM in
     ~1-second chunks, apply silence-based buffering, and upload each
     running buffer to ``/transcripts``.
     """
-    uploader = TranscribeUploader(server=server, tenant_id=tenant_id)
+    uploader = TranscribeUploader(server=server, tenant_id=tenant_id, auth_cookie_path=auth_cookie_path, auth_token=auth_token)
     buffer = bytearray()
     chunk_id: str = _new_chunk_id()
 
@@ -236,6 +264,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Explicit tenant ID override. By default the grabber asks "
             "the server for a fresh tenant ID per run via POST /session."
         ),
+    )
+    parser.add_argument(
+        "--auth-cookie",
+        default=None,
+        help="Path to cookies.txt containing backend JWT auth cookie.",
+    )
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help="Raw JWT token to use for backend authentication.",
     )
 
     sub = parser.add_subparsers(
@@ -353,7 +391,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tenant_id = args.tenant
         registered = False
     else:
-        tenant_id = _register_session(server=args.server, source=args.source)
+        tenant_id = _register_session(server=args.server, source=args.source, auth_cookie_path=args.auth_cookie, auth_token=args.auth_token)
         registered = True
 
     print("=" * 60)
@@ -368,7 +406,7 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"/transcripts/first?tenant_id={tenant_id}\"")
     print("=" * 60)
 
-    run(source=source, server=args.server, tenant_id=tenant_id)
+    run(source=source, server=args.server, tenant_id=tenant_id, auth_cookie_path=args.auth_cookie, auth_token=args.auth_token)
     return 0
 
 
