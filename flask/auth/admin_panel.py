@@ -1,4 +1,4 @@
-from flask import redirect, url_for, request
+from flask import redirect, url_for, request, flash
 from flask_admin.contrib.sqla import ModelView
 from flask_admin import AdminIndexView
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
@@ -26,6 +26,9 @@ class SecureModelView(ModelView):
             pass
             
         return False
+
+    def on_model_delete(self, model):
+        flash(f"user {model.email} is deleted", "success")
 
     def inaccessible_callback(self, name, **kwargs):
         # Redirect to login page if user doesn't have access
