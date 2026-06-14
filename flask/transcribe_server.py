@@ -22,15 +22,6 @@ import threading
 import time
 import uuid
 
-# --- GLOBAL SSL PATCH: bypass strict OpenSSL 3.0 EOF checks (fixes yt-dlp & Whisper crashes) ---
-import ssl
-orig_wrap_socket = ssl.SSLContext.wrap_socket
-def wrap_socket_patch(self, *args, **kwargs):
-    self.options |= getattr(ssl, "OP_IGNORE_UNEXPECTED_EOF", 0)
-    self.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
-    return orig_wrap_socket(self, *args, **kwargs)
-ssl.SSLContext.wrap_socket = wrap_socket_patch
-# -----------------------------------------------------------------------------------------------
 
 from dataclasses import dataclass
 import subprocess
