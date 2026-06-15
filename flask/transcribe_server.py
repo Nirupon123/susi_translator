@@ -674,8 +674,8 @@ def translate_stream():
 
                 now = time.time()
                 provider_name = registry.get_provider_name(tenant_id, "translation")
-                # Groq's free tier is rate-limited; enforce a minimum gap between calls.
-                throttle_interval = 2.1 if provider_name and "groq" in provider_name.lower() else 0.0
+                # Default throttle interval (can be increased for rate-limited providers)
+                throttle_interval = 0.0
                 can_translate = (now - last_translation_time) >= throttle_interval
 
                 events_to_send = []
