@@ -18,7 +18,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return match ? match[1] : null;
     };
 
-    if (VIDEO_URL) {
+    if (STREAM_TYPE === 'mic') {
+        ytPlayer.style.display = 'none';
+        const micContainer = document.getElementById('mic-container');
+        if (micContainer) micContainer.style.display = 'flex';
+    } else if (VIDEO_URL) {
         const ytId = extractYtId(VIDEO_URL);
         const twitchId = extractTwitchId(VIDEO_URL);
         const vimeoId = extractVimeoId(VIDEO_URL);
@@ -211,17 +215,14 @@ document.addEventListener('DOMContentLoaded', () => {
     connect();
 
     // Reconnect when viewer picks a different language.
-    // We keep lastChunkId so they don't re-receive all old chunks,
-    // but we clear the screen so languages don't mix.
+    // We keep lastChunkId so they don't re-receive all old chunks.
+    // We no longer clear the screen, so past transcriptions are preserved.
     langSelect.addEventListener('change', () => {
         stopAndClearAudio();
         const chosen = langSelect.value;
         localStorage.setItem(`susi_lang_${TENANT_ID}`, chosen);
         
-        const captionsBox = document.getElementById('captions-box');
-        if (captionsBox) {
-            captionsBox.innerHTML = '<div class="system-msg">Switched language. Waiting for next sentence...</div>';
-        }
+        // Removed captionsBox.innerHTML clear so past transcripts remain
         
         connect();
     });

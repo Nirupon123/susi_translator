@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional
+
 
 from .base import (
     BaseProvider,
@@ -157,16 +159,6 @@ class ProviderRegistry:
                 }
                 logger.info(f"[Registry] Configured transcription module '{t_name}' for tenant '{tenant_id}'")
 
-            #instantiate transcription model in a background thread
-            # so it is warm and ready before the first /transcribe chunk arrives
-            if transcription:
-                threading.Thread(
-                    target=self._warmup,
-                    args=(tenant_id, "transcription"),
-                    name=f"warmup-transcription-{tenant_id}",
-                    daemon=True,
-                ).start()
-
             if translation:
                 self._tenants[tenant_id]["translation"] = {
                     "provider_name": tx_name,
@@ -176,17 +168,31 @@ class ProviderRegistry:
                     "instance": None,
                     "ready": False,
                 }
-
                 logger.info(f"[Registry] Configured translation module '{tx_name}' for tenant '{tenant_id}'")
 
-            # Eagerly instantiate translation model in a background thread
-            if translation:
-                threading.Thread(
-                    target=self._warmup,
-                    args=(tenant_id, "translation"),
-                    name=f"warmup-translation-{tenant_id}",
-                    daemon=True,
-                ).start()
+        # Start warmup threads OUTSIDE the lock so they don't hold it during
+        # heavy model loading. Use default-argument binding to capture the
+        # correct tenant_id at thread creation time (not at call time).
+        if transcription:
+            def _warmup_transcription(tid=tenant_id):
+                time.sleep(1)
+                self._warmup(tid, "transcription")
+            threading.Thread(
+                target=_warmup_transcription,
+                name=f"warmup-transcription-{tenant_id}",
+                daemon=True,
+            ).start()
+
+        if translation:
+            def _warmup_translation(tid=tenant_id):
+                time.sleep(1)
+                self._warmup(tid, "translation")
+            threading.Thread(
+                target=_warmup_translation,
+                name=f"warmup-translation-{tenant_id}",
+                daemon=True,
+            ).start()
+
 
         #Detect Unified Dual-Role Provider Allocations
         if transcription and translation and t_name == tx_name:

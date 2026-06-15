@@ -1,3 +1,40 @@
+function onStreamTypeChange() {
+    const streamType = document.getElementById('stream-type').value;
+    const streamInput = document.getElementById('stream-url');
+    const streamInputLabel = document.getElementById('stream-input-label');
+    
+    const streamInputGroup = document.getElementById('stream-input-group');
+    const fileUploadGroup = document.getElementById('file-upload-group');
+    const audioUpload = document.getElementById('audio-upload');
+    
+    if (streamType === 'youtube') {
+        streamInputGroup.classList.remove('hidden');
+        if(fileUploadGroup) fileUploadGroup.style.display = 'none';
+        if(audioUpload) audioUpload.required = false;
+        streamInputLabel.innerHTML = 'Stream URL <span class="required" id="stream-input-required">*</span>';
+        streamInput.placeholder = 'https://www.youtube.com/watch?v=...';
+        streamInput.required = true;
+    } else if (streamType === 'url') {
+        streamInputGroup.classList.remove('hidden');
+        if(fileUploadGroup) fileUploadGroup.style.display = 'none';
+        if(audioUpload) audioUpload.required = false;
+        streamInputLabel.innerHTML = 'Stream URL <span class="required" id="stream-input-required">*</span>';
+        streamInput.placeholder = 'https://example.com/stream.m3u8';
+        streamInput.required = true;
+    } else if (streamType === 'file') {
+        streamInputGroup.classList.add('hidden');
+        streamInput.required = false;
+        if(fileUploadGroup) fileUploadGroup.style.display = 'block';
+        if(audioUpload) audioUpload.required = true;
+    } else if (streamType === 'mic') {
+        streamInputGroup.classList.add('hidden');
+        if(fileUploadGroup) fileUploadGroup.style.display = 'none';
+        if(audioUpload) audioUpload.required = false;
+        streamInput.required = false;
+        streamInput.value = '';
+    }
+}
+
 function toggleTranslation() {
     const checkbox = document.getElementById('translation-toggle');
     const section = document.getElementById('translation-section');
@@ -77,8 +114,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!urlParams.has('edit')) {
         let rooms = JSON.parse(localStorage.getItem('susi_rooms') || '[]');
         let room = rooms.find(r => r.tenant_id === TENANT_ID);
-        if (room && room.configured && room.videoUrl) {
-            window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(room.videoUrl)}`);
+        if (room && room.configured) {
+            window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(room.videoUrl || '')}&type=${room.streamType || 'youtube'}`);
             return;
         }
     }
@@ -91,7 +128,46 @@ document.addEventListener('DOMContentLoaded', () => {
 document.getElementById('config-form').addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    const streamUrl = document.getElementById('stream-url').value.trim();
+    const streamType = document.getElementById('stream-type').value;
+    let streamUrl = document.getElementById('stream-url').value.trim();
+    
+    try {
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const submitBtn = document.querySelector('.start-btn');
+        loadingOverlay.classList.remove('hidden');
+        submitBtn.disabled = true;
+
+        if (streamType === 'file') {
+            const fileInput = document.getElementById('audio-upload');
+            if (!fileInput || fileInput.files.length === 0) {
+                loadingOverlay.classList.add('hidden');
+                submitBtn.disabled = false;
+                alert('Please select an audio file to upload.');
+                return;
+            }
+            
+            document.getElementById('loading-subtitle').innerText = "Uploading audio securely...";
+            
+            const formData = new FormData();
+            formData.append('audio_file', fileInput.files[0]);
+            
+            const uploadRes = await fetch('/api/v1/translate/upload_file', {
+                method: 'POST',
+                body: formData
+            });
+            const uploadData = await uploadRes.json();
+            
+            if (uploadData.status === 'success') {
+                streamUrl = uploadData.file_path; // Use the internal docker path
+                document.getElementById('loading-subtitle').innerText = "Starting engine...";
+            } else {
+                loadingOverlay.classList.add('hidden');
+                submitBtn.disabled = false;
+                alert('File upload failed: ' + uploadData.message);
+                return;
+            }
+        }
+
     const sourceLang = document.getElementById('source-lang').value;
     const transcriptionModel = document.getElementById('transcription-model').value;
     const modelSize = document.getElementById('model-size').value;
@@ -113,6 +189,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     // build configure payload
     const payload = {
         tenant_id: TENANT_ID,
+        stream_type: streamType,
         stream_url: streamUrl,
         transcription: transcriptionBlock,
     };
@@ -137,12 +214,6 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
             payload.translation.config.api_key = translationApiKey;
         }
     }
-
-    try {
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const submitBtn = document.querySelector('.start-btn');
-        loadingOverlay.classList.remove('hidden');
-        submitBtn.disabled = true;
 
         // Send the configuration to the server
         const response = await fetch('/api/v1/translate/configure', {
@@ -171,12 +242,13 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
                                 if (r.tenant_id === TENANT_ID) {
                                     r.configured = true;
                                     r.videoUrl = streamUrl;
+                                    r.streamType = streamType;
                                 }
                                 return r;
                             });
                             localStorage.setItem('susi_rooms', JSON.stringify(rooms));
 
-                            window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(streamUrl)}`);
+                            window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(streamUrl)}&type=${streamType}`);
                         }, 500);
                     }
                 } catch (err) {

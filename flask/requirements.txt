@@ -12,6 +12,7 @@ djangorestframework
 drf-yasg
 edge-tts
 flask
+flask-admin
 flask-cors
 flask-restx
 mkdocs
@@ -33,3 +34,4 @@ httpx
 huggingface-hub
 transformers
 yt-dlp
+pydub

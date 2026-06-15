@@ -262,6 +262,7 @@ input:checked + .slider:before {
 }
 
 .captions-box {
+    width: 100%;
     padding: 20px;
     height: 440px;
     overflow-y: scroll; /* Changed to scroll so track is always visible */
@@ -324,4 +325,44 @@ input:checked + .slider:before {
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
+}
+
+/* ==========================================================================
+   Web Microphone Visualizer
+   ========================================================================== */
+#mic-container {
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    background: #f8faff;
+    position: relative;
+    overflow: hidden;
+}
+
+.mic-icon {
+    font-size: 80px;
+    z-index: 10;
+    background: #ffffff;
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 4px 15px rgba(79,142,247,0.3);
+}
+
+.mic-wave {
+    position: absolute;
+    border-radius: 50%;
+    background: rgba(79, 142, 247, 0.4);
+    transform: translate(-50%, -50%) scale(0.5);
+    left: 50%;
+    top: 50%;
+    pointer-events: none;
+    transition: transform 0.1s linear, opacity 0.1s linear;
+    width: 150px;
+    height: 150px;
+    opacity: 0;
 }

@@ -29,7 +29,6 @@ def signup_page():
     return render_template("auth/signup.html")
 
 # API routes
-
 @auth_bp.route("/api/signup", methods=["POST"])
 def signup():
     data = request.get_json(silent=True) or {}

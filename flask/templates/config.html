@@ -3,7 +3,7 @@
 {% block title %}SUSI Translator - Configure Room{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/config.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/config.css') }}?v=2" />
 {% endblock %}
 
 {% block content %}
@@ -16,9 +16,27 @@
     <form id="config-form">
 
         <div class="form-group">
-            <label for="stream-url">Stream URL <span class="required">*</span></label>
+            <label for="stream-type">Stream Type <span class="required">*</span></label>
+            <select id="stream-type" onchange="onStreamTypeChange()">
+                <option value="youtube" selected>Stream Link</option>
+                <option value="mic">Microphone</option>
+                <option value="file">Audio File</option>
+            </select>
+        </div>
+
+        <div class="form-group" id="stream-input-group">
+            <label for="stream-url" id="stream-input-label">Stream URL <span class="required" id="stream-input-required">*</span></label>
             <input type="text" id="stream-url" placeholder="https://www.youtube.com/watch?v=..." required />
         </div>
+
+        <div class="form-group" id="file-upload-group" style="display: none;">
+            <label for="audio-upload">Upload File <span class="required">*</span></label>
+            <div class="file-upload-wrapper">
+                <input type="file" id="audio-upload" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4,.aac" />
+                <div class="file-upload-help">Supported formats: .mp3, .wav, .m4a, .mp4, .ogg, .flac</div>
+            </div>
+        </div>
+
 
         <div class="form-group">
             <label for="source-lang">Source Language</label>
@@ -107,5 +125,5 @@
 <script>
     const TENANT_ID = "{{ tenant_id }}";
 </script>
-<script src="{{ url_for('static', filename='js/config.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/config.js') }}?v=3"></script>
 {% endblock %}

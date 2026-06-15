@@ -5,6 +5,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_bcrypt import Bcrypt
 from werkzeug.exceptions import HTTPException
+from werkzeug.utils import secure_filename
 from typing import Optional
 import numpy as np
 import threading
@@ -30,6 +31,9 @@ from datetime import timedelta
 from dotenv import load_dotenv
 
 from auth.routes import auth_bp, bcrypt
+from auth.decorators import organizer_required
+from flask_admin import Admin
+from auth.admin_panel import SecureModelView, SecureAdminIndexView
 
 
 
@@ -85,6 +89,14 @@ app.register_blueprint(auth_bp)
 # Create DB tables if they don't exist yet (safe no-op if already created)
 with app.app_context():
     db.create_all()
+
+
+# Initialize Flask-Admin
+from flask_admin.theme import Bootstrap4Theme
+admin = Admin(app, name='SUSI Admin', theme=Bootstrap4Theme(swatch='flatly'), url='/admin', index_view=SecureAdminIndexView())
+from auth.models import Organizer
+admin.add_view(SecureModelView(Organizer, db, name="Users/Organizers"))
+
 
 # Load all provider plugins — registers whisper_local, groq_whisper, nllb_local, groq_llama
 # into the ProviderRegistry factory table before any request arrives.
@@ -237,7 +249,19 @@ def process_audio():
     while True:
         tenant_id, chunk_id, audiob64 = _next_payload()
         logger.debug(f"Queue length: {audio_stack.qsize()}")
+        requeued = False
         try:
+            # If the pipeline isn't ready yet (model still warming up),
+            # put this chunk BACK on the queue and wait briefly.
+            # This prevents losing file chunks that arrive before the model finishes loading.
+            if not registry.is_pipeline_ready(tenant_id):
+                logger.debug(f"Pipeline not ready for tenant {tenant_id}, requeueing chunk {chunk_id}")
+                audio_stack.task_done()  # account for the get() above
+                audio_stack.put((tenant_id, chunk_id, audiob64))
+                requeued = True
+                time.sleep(0.5)
+                continue
+
             audio_data = base64.b64decode(audiob64)
             audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
 
@@ -278,26 +302,31 @@ def process_audio():
         except Exception:
             logger.error(f"Error processing audio chunk {chunk_id}", exc_info=True)
         finally:
-            audio_stack.task_done()
+            if not requeued:
+                audio_stack.task_done()
 
 
-# Check if the transcript is valid: Contains at least one ASCII character and no forbidden words
+
+
+# Check if the transcript is valid: Contains at least one alphanumeric character and no forbidden words
 def is_valid(transcript):
     transcript_lower = transcript.lower()
-    # Check for at least one ASCII character with a code < 128 and code > 32 (we omit space in this case)
-    has_ascii_char = any(32 < ord(char) < 128 for char in transcript)
+    # Check for at least one alphanumeric character (supports all languages including non-Latin scripts)
+    has_alpha_num = any(char.isalnum() for char in transcript)
 
-    # Check for forbidden words (case insensitive)
+    # Check for forbidden phrases (case insensitive)
     forbidden_phrases = {"click, click", "click click", "cough cough", "뉴", "스", "김", "수", "근", "입", "니", "다"}
     contains_forbidden_phrases = any(word in transcript_lower for word in forbidden_phrases)
+
+    # Reject if the entire transcript exactly matches a forbidden string
     forbidden_strings = {"eh.", "you", "it's fine"}
     is_forbidden_string = any(word == transcript_lower for word in forbidden_strings)
 
-    # check if the transcript has words which are longer than 40 characters
+    # Reject hallucinated outputs: a single repeated word taking up > 40 chars
     contains_long_words = any(len(word) > 40 for word in transcript.split())
 
-    # Return true only if both conditions are met
-    return has_ascii_char and not contains_forbidden_phrases and not is_forbidden_string and not contains_long_words
+    # Valid only if it has real content and none of the rejection criteria apply
+    return has_alpha_num and not contains_forbidden_phrases and not is_forbidden_string and not contains_long_words
 
 
 # Clean old transcripts: remove all chunks older than two hours and any tenants
@@ -447,6 +476,29 @@ session_response_model = api.model('SessionResponse', {
     'source': fields.String(description='Source name this session is registered under'),
 })
 
+@app.route('/api/v1/translate/upload_file', methods=['POST'])
+def upload_file():
+    if 'audio_file' not in request.files:
+        return jsonify({"status": "error", "message": "No audio_file provided"}), 400
+        
+    file = request.files['audio_file']
+    if file.filename == '':
+        return jsonify({"status": "error", "message": "No selected file"}), 400
+        
+    if file:
+        filename = secure_filename(file.filename)
+        upload_dir = os.path.join(app.instance_path, 'uploads')
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        file_path = os.path.join(upload_dir, filename)
+        file.save(file_path)
+        
+        return jsonify({
+            "status": "success",
+            "file_path": file_path
+        })
+
+
 
 @app.route('/api/v1/translate/configure', methods=['POST'])
 def configure_provider():
@@ -477,8 +529,9 @@ def configure_provider():
         if translation:
             configured.append(f"translation='{translation.get('provider_name')}'")
 
+        stream_type = data.get("stream_type", "youtube")
         stream_url = data.get("stream_url")
-        if stream_url:
+        if stream_url or stream_type == "mic":
             with grabber_lock:
                 old_proc = grabber_processes.pop(tenant_id, None)
                 if old_proc:
@@ -497,27 +550,33 @@ def configure_provider():
                     [item for item in audio_stack.queue if item[0] != tenant_id]
                 )
 
-            logger.info(f"Spawning audio_grabber for tenant {tenant_id} on url {stream_url}")
-            cmd = [
-                sys.executable,
-                "audio_grabber.py",
-                "--tenant", tenant_id,
-                "youtube",
-                "--url", stream_url
-            ]
-            
-            # Automatically use cookies file if provided in the instance volume
-            cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance", "youtubecookies.txt")
-            if os.path.exists(cookies_path):
-                logger.info(f"Using YouTube cookies file found at {cookies_path}")
-                cmd.extend(["--cookies", cookies_path])
-            proc = subprocess.Popen(
-                cmd, 
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                preexec_fn=os.setsid
-            )
-            with grabber_lock:
-                grabber_processes[tenant_id] = proc
+            if stream_type != "mic":
+                logger.info(f"Spawning audio_grabber for tenant {tenant_id} with source {stream_type}")
+                cmd = [
+                    sys.executable,
+                    "audio_grabber.py",
+                    "--tenant", tenant_id,
+                    stream_type
+                ]
+                
+                if stream_type == "youtube":
+                    cmd.extend(["--url", stream_url])
+                    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance", "youtubecookies.txt")
+                    if os.path.exists(cookies_path):
+                        logger.info(f"Using YouTube cookies file found at {cookies_path}")
+                        cmd.extend(["--cookies", cookies_path])
+                elif stream_type == "url":
+                    cmd.extend(["--url", stream_url])
+                elif stream_type == "file":
+                    cmd.extend(["--path", stream_url, "--realtime"])
+
+                proc = subprocess.Popen(
+                    cmd, 
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    preexec_fn=os.setsid
+                )
+                with grabber_lock:
+                    grabber_processes[tenant_id] = proc
 
         return jsonify({
             "status": "success",
@@ -635,7 +694,6 @@ def stop_event(tenant_id):
                 proc.wait(timeout=3)
             except Exception as e:
                 app.logger.warning(f"Error handling task for {tenant_id}: {e}")
-            audio_stack.task_done()
 
     registry.remove(tenant_id)
 
@@ -1110,7 +1168,8 @@ def stream_page(tenant_id: str):
     if redir:
         return redir
     video_url = request.args.get("url", "")
-    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url)
+    stream_type = request.args.get("type", "youtube")
+    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url, stream_type=stream_type)
 
 
 
