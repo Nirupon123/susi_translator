@@ -98,7 +98,7 @@ from auth.models import Organizer
 admin.add_view(SecureModelView(Organizer, db, name="Users/Organizers"))
 
 
-# Load all provider plugins — registers whisper_local, groq_whisper, nllb_local, groq_llama
+# Load all provider plugins — registers whisper_local, nllb_local
 # into the ProviderRegistry factory table before any request arrives.
 import providers.plugins  # noqa: F401  (side-effect import)
 
@@ -614,7 +614,7 @@ def translate_stream():
             
             now = time.time()
             provider_name = registry.get_provider_name(tenant_id, "translation")
-            throttle_interval = 2.1 if provider_name and "groq" in provider_name.lower() else 0.0
+            throttle_interval = 0.0
             can_translate = (now - last_translation_time) >= throttle_interval
             
             events_to_send = []

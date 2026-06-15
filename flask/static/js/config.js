@@ -50,8 +50,8 @@ function onTranscriptionModelChange() {
     const apikeyGroup = document.getElementById('transcription-apikey-group');
     const whisperSizeGroup = document.getElementById('whisper-size-group');
 
-    // Show API key field for any cloud API model (Groq, OpenAI, etc.)
-    const needsApiKey = ['groq_whisper', 'deepl', 'openai'].includes(model);
+    // Show API key field for any cloud API model (OpenAI, etc.)
+    const needsApiKey = ['deepl', 'openai'].includes(model);
     apikeyGroup.classList.toggle('hidden', !needsApiKey);
 
     // Show model size only for local Whisper
@@ -60,28 +60,20 @@ function onTranscriptionModelChange() {
 
     // Update the API key label to reflect which service
     const label = apikeyGroup.querySelector('label');
-    if (model === 'groq_whisper') {
-        label.textContent = 'Groq API Key';
-    } else {
-        label.textContent = 'API Key / HF Token';
-    }
+    label.textContent = 'API Key / HF Token';
 }
 
 function onTranslationModelChange() {
     const model = document.getElementById('translation-model').value;
     const apikeyGroup = document.getElementById('translation-apikey-group');
 
-    // Groq Llama and DeepL both need an API key; local NLLB does not.
-    const needsApiKey = ['groq_llama', 'deepl'].includes(model);
+    // DeepL needs an API key; local NLLB does not.
+    const needsApiKey = ['deepl'].includes(model);
     apikeyGroup.classList.toggle('hidden', !needsApiKey);
 
     // Update the API key label to reflect which service
     const label = apikeyGroup.querySelector('label');
-    if (model === 'groq_llama') {
-        label.textContent = 'Groq API Key';
-    } else {
-        label.textContent = 'API Key';
-    }
+    label.textContent = 'API Key';
 }
 
 // --- API Key Visual Masking ---

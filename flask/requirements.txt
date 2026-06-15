@@ -29,7 +29,6 @@ flask-sqlalchemy
 flask-jwt-extended
 flask-bcrypt
 PyJWT
-groq
 httpx
 huggingface-hub
 transformers
