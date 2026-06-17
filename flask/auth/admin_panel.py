@@ -16,6 +16,9 @@ class SecureModelView(ModelView):
     A custom ModelView for Flask-Admin that checks for a valid JWT token
     and ensures the authenticated Organizer has the is_admin flag set to True.
     """
+    column_exclude_list = ['password_hash']
+    form_excluded_columns = ['password_hash']
+
     def is_accessible(self):
         try:
             verify_jwt_in_request(locations=["cookies"])

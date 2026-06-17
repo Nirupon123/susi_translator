@@ -42,7 +42,16 @@ def test_transcribe_enqueues_and_returns_processing(client, ts):
         "chunk_id": "12345",
         "tenant_id": "tenant-x",
     }
-    resp = client.post("/transcribe", json=payload)
+    from flask_jwt_extended import create_access_token
+    token = create_access_token(
+        identity="internal_grabber",
+        additional_claims={"role": "internal", "tenant_id": "tenant-x"}
+    )
+    resp = client.post(
+        "/transcribe", 
+        json=payload, 
+        headers={"Authorization": f"Bearer {token}"}
+    )
     assert resp.status_code == 200
     body = resp.get_json()
     assert body == {"chunk_id": "12345", "tenant_id": "tenant-x", "status": "processing"}

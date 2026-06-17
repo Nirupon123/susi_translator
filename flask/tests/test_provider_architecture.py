@@ -171,7 +171,7 @@ class TestPipelineExecutionAndErrors:
 
         registry.configure("tenant1", None, {"provider_name": "failing_nmt", "config": {"break_on_init": True}})
 
-        with pytest.raises(RuntimeError, match="missing heavy ML weights"):
+        with pytest.raises(ProviderConfigError, match="Provider initialization failed for 'failing_nmt': missing heavy ML weights"):
             registry.translate("tenant1", "hello", "en", "es")
 
 

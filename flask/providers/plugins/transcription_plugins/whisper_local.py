@@ -59,6 +59,10 @@ class WhisperLocalProvider(TranscriptionProvider):
         import torch
         import whisper
 
+        if self._model is not None:
+            logger.info(f"[whisper_local] Model '{self._model_size}' already loaded in memory.")
+            return
+
         device = self._device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         #Force CPU if CUDA is requested but the machine lacks a GPU

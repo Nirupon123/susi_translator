@@ -5,12 +5,14 @@ from flask_bcrypt import Bcrypt
 from flask_jwt_extended import (
     create_access_token,
     jwt_required,
+    get_jwt,
     get_jwt_identity,
     set_access_cookies,
     unset_jwt_cookies,
 )
 from sqlalchemy.exc import SQLAlchemyError
 from .models import db, Organizer
+from .extensions import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ def signup_page():
 
 # API routes
 @auth_bp.route("/api/signup", methods=["POST"])
+@limiter.limit("5 per minute")
 def signup():
     data = request.get_json(silent=True) or {}
     email = data.get("email", "").strip().lower()
@@ -68,6 +71,7 @@ def signup():
 
 
 @auth_bp.route("/api/login", methods=["POST"])
+@limiter.limit("5 per minute")
 def login():
     data = request.get_json(silent=True) or {}
     email = data.get("email", "").strip().lower()
@@ -93,7 +97,18 @@ def login():
 
 
 @auth_bp.route("/api/logout", methods=["POST"])
+@jwt_required()
 def logout():
+    jti = get_jwt()["jti"]
+    from .models import TokenBlocklist
+    try:
+        db.session.add(TokenBlocklist(jti=jti))
+        db.session.commit()
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Database error during logout: {str(e)}")
+        return jsonify({"status": "error", "message": "An internal server error occurred."}), 500
+
     response = jsonify({"status": "success", "message": "Logged out successfully."})
     unset_jwt_cookies(response)
     return response, 200

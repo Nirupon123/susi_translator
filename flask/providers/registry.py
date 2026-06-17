@@ -82,7 +82,12 @@ def _get_or_create_shared_model(provider_name: str, config: Dict[str, Any]) -> B
             raise ProviderConfigError(
                 f"Unknown provider '{provider_name}'. Available: {available_providers()}"
             )
-        instance = factory(config)
+        try:
+            instance = factory(config)
+        except Exception as e:
+            raise ProviderConfigError(
+                f"Provider initialization failed for '{provider_name}': {e}"
+            ) from e
         _shared_models[cache_key] = instance
 
         # Build a safe log key: mask api_key values so they never appear in logs.
@@ -112,6 +117,7 @@ class ProviderRegistry:
         tenant_id: str,
         transcription: Optional[Dict[str, Any]] = None,
         translation: Optional[Dict[str, Any]] = None,
+        organizer_id: Optional[int] = None,
     ) -> None:
 
         t_name = None
@@ -138,7 +144,7 @@ class ProviderRegistry:
         #performing Atomic Writes to the registry with thread lock to avoid race conditions
         with self._lock:
             # always reset both slots on reconfigure to avoid stale provider bleedover
-            self._tenants[tenant_id] = {"transcription": None, "translation": None}
+            self._tenants[tenant_id] = {"transcription": None, "translation": None, "organizer_id": organizer_id}
 
             if transcription:
                 t_config = dict(transcription)
@@ -196,6 +202,20 @@ class ProviderRegistry:
                 f"[Registry] Tenant '{tenant_id}' configured the same provider '{t_name}' "
                 "in both slots. Consider using a single TranscriptionTranslationProvider slot instead."
             )
+
+    def check_ownership(self, tenant_id: str, organizer_id: int) -> bool:
+        """Returns True if the tenant is owned by the given organizer_id or has not been claimed yet."""
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if not tenant:
+                # If the tenant doesn't exist in the registry yet, it hasn't been claimed.
+                # Allow the configuration to proceed so it can be claimed.
+                return True
+            # Allow operations if there's no owner recorded, but block mismatch
+            owner = tenant.get("organizer_id")
+            if owner is None:
+                return True
+            return owner == organizer_id
 
     def is_pipeline_ready(self, tenant_id: str) -> bool:
         """Checks if all configured background threads have fully loaded their models."""

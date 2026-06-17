@@ -18,6 +18,7 @@ os.environ["FLASK_HOST"] = "127.0.0.1"
 os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:5040"
 os.environ["SESSION_TTL_SECONDS"] = "7200"
 os.environ["TRANSCRIBE_AUTOSTART_WORKER"] = "false"
+os.environ["JWT_SECRET_KEY"] = "testing-secret-key-that-is-long-enough"
 
 
 @pytest.fixture

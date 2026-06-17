@@ -73,6 +73,10 @@ class NLLBLocalProvider(TranslationProvider):
         import torch
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+        if self._model is not None and self._tokenizer is not None:
+            logger.info(f"[{self.provider_name}] Model '{self._model_id}' already loaded in memory.")
+            return
+
         # Device hardware detection and safety fallback
         self.device = self._device_config or ("cuda" if torch.cuda.is_available() else "cpu")
         

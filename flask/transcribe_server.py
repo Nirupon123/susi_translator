@@ -99,14 +99,18 @@ _cors_origins = _env_csv(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5040,http://127.0.0.1:5040",
 )
-CORS(app, resources={r"/*": {"origins": _cors_origins}})
+if "*" in _cors_origins:
+    logger.warning("CORS wildcard '*' is not allowed when supports_credentials=True. Falling back to localhost.")
+    _cors_origins = ["http://localhost:5040", "http://127.0.0.1:5040"]
+
+CORS(app, resources={r"/*": {"origins": _cors_origins}}, supports_credentials=True)
 logger.info(f"CORS allowed origins: {_cors_origins}")
 
 # Database, Auth, JWT 
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///susi.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = _require_secret_key("JWT_SECRET_KEY")
-app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+app.config["JWT_TOKEN_LOCATION"] = ["cookies", "headers"]
 
 
 
@@ -131,8 +135,19 @@ _INTERNAL_TOKEN_EXPIRY: timedelta = timedelta(
 
 from auth.models import db
 db.init_app(app)
-JWTManager(app)
+jwt = JWTManager(app)
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload: dict) -> bool:
+    jti = jwt_payload["jti"]
+    from auth.models import TokenBlocklist, db
+    with app.app_context():
+        token = db.session.query(TokenBlocklist.id).filter_by(jti=jti).scalar()
+    return token is not None
 bcrypt.init_app(app)
+
+from auth.extensions import limiter
+limiter.init_app(app)
 
 # Register the auth blueprint (/auth/login, /auth/signup, /auth/api/*)
 app.register_blueprint(auth_bp)
@@ -212,6 +227,23 @@ def _in_chunk_range(k, fromid: int, untilid: int) -> bool:
     """``True`` iff ``k`` parses to an int and lies within [fromid, untilid]."""
     n = _chunk_id_int(k)
     return n is not None and fromid <= n <= untilid
+
+
+def _assert_tenant_ownership(tenant_id: str) -> None:
+    """
+    Raises 403 Forbidden if the current user does not own the tenant_id.
+    Admins bypass this check.
+    """
+    from flask_jwt_extended import get_jwt_identity
+    from auth.models import Organizer
+    email = get_jwt_identity()
+    if not email:
+        return
+    organizer = Organizer.query.filter_by(email=email).first()
+    if organizer and organizer.is_admin:
+        return
+    if organizer and not registry.check_ownership(tenant_id, organizer.id):
+        abort(403, "You do not have permission to access or modify this tenant's stream.")
 
 
 def _resolve_tenant(args, default='0000'):
@@ -527,6 +559,19 @@ def _transcribe_logic(success_status: int = 202):
     if not audio_b64 or not chunk_id:
         return {"error": "Missing required fields"}, 400
 
+    from flask_jwt_extended import verify_jwt_in_request, get_jwt
+    from flask_jwt_extended.exceptions import JWTExtendedException
+    from jwt.exceptions import PyJWTError
+    try:
+        verify_jwt_in_request(locations=["headers"])
+        claims = get_jwt()
+    except (JWTExtendedException, PyJWTError) as exc:
+        logger.warning(f"Auth failed for /transcripts: {exc.__class__.__name__}: {exc}")
+        return {"error": "Authentication required.", "status": "error"}, 401
+
+    if claims.get("role") != "internal" or claims.get("tenant_id") != tenant_id:
+        return {"error": "Forbidden or invalid tenant scope.", "status": "error"}, 403
+
     # push to processing queue
     audio_stack.put((tenant_id, chunk_id, audio_b64))
     return {"chunk_id": chunk_id, "tenant_id": tenant_id, "status": "processing"}, success_status
@@ -712,11 +757,21 @@ def configure_provider():
             "message": "At least one of 'transcription' or 'translation' must be provided.",
         }), 400
 
+    _assert_tenant_ownership(tenant_id)
+
     try:
+        from flask_jwt_extended import get_jwt_identity
+        from auth.models import Organizer
+        email = get_jwt_identity()
+        organizer = None
+        if email:
+            organizer = Organizer.query.filter_by(email=email).first()
+
         registry.configure(
             tenant_id=tenant_id,
             transcription=transcription,
             translation=translation,
+            organizer_id=organizer.id if organizer else None,
         )
         configured = []
         if transcription:
@@ -728,14 +783,11 @@ def configure_provider():
         if stream_url:
             logger.info(f"Spawning audio_grabber for tenant {tenant_id} on url {stream_url}")
             from flask_jwt_extended import create_access_token
-            # - 24 hours ensures long-running live streams do not fail midway.
-            #   (The grabber must authenticate every chunk it sends).
-            # - role=internal is rejected by organizer_required on every
-            #   endpoint except POST /transcripts (see auth/decorators.py).
+
             internal_token = create_access_token(
                 identity="internal_grabber",
                 expires_delta=_INTERNAL_TOKEN_EXPIRY,
-                additional_claims={"role": "internal"},
+                additional_claims={"role": "internal", "tenant_id": tenant_id},
             )
         
             source_type = data.get("source_type", "youtube")
@@ -743,6 +795,8 @@ def configure_provider():
             if source_type == "youtube":
                 YouTubeSource._validate_url(stream_url)
             elif source_type == "url":
+                if not organizer or not organizer.is_admin:
+                    return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs."}), 403
                 URLSource._validate_url(stream_url)
             else:
                 return jsonify({
@@ -764,9 +818,12 @@ def configure_provider():
                 source_type,
                 "--url", stream_url,
             ]
-            # Pass the auth token via environment variable, NOT as a CLI
-            # argument, so it never appears in `ps aux` or shell history.
-            grabber_env = {**os.environ, "GRABBER_AUTH_TOKEN": internal_token}
+            # Pass the auth token via environment variable
+            # Explicitly construct a minimal environment to avoid leaking
+            # sensitive parent vars to the subprocess.
+            safe_env_keys = {"PATH", "LANG", "LC_ALL", "USER", "HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+            grabber_env = {k: os.environ[k] for k in safe_env_keys if k in os.environ}
+            grabber_env["GRABBER_AUTH_TOKEN"] = internal_token
 
             # Only applicable for the youtube source.
             if source_type == "youtube":
@@ -813,6 +870,11 @@ def translate_stream():
     Server-sent events endpoint for real-time captions
     """
     tenant_id = _resolve_tenant(request.args)
+    if not tenant_id:
+        return jsonify({"status": "error", "message": "Missing 'tenant_id'"}), 400
+
+    _assert_tenant_ownership(tenant_id)
+
     target_lang = request.args.get('target_lang')
     if not target_lang:
         target_lang = registry.get_language_config(tenant_id).get('target_lang')
@@ -893,6 +955,8 @@ def stop_event(tenant_id):
     Kills the background audio grabber, releases provider slots, and
     deletes all in-memory transcripts for tenant_id.
     """
+    _assert_tenant_ownership(tenant_id)
+
     with grabber_lock:
         proc = grabber_processes.pop(tenant_id, None)
     if proc:
@@ -909,34 +973,28 @@ def stop_event(tenant_id):
 @app.route('/internal/token-refresh', methods=['POST'])
 def internal_token_refresh():
     """
-    Issues a fresh short-lived internal token to a running audio_grabber.
-
-    The grabber calls this endpoint proactively before its current token
-    expires (at ~80% of _INTERNAL_TOKEN_EXPIRY), so long-running livestreams
-    never hit an ExpiredSignatureError on POST /transcripts.
-
-    Authentication: the caller must present a still-valid role=internal JWT
-    cookie (access_token_cookie). The endpoint itself is NOT protected by
-    @organizer_required — internal tokens cannot access organiser routes.
+    Issues a fresh short-lived internal token to a running audio_grabber
     """
     from flask_jwt_extended import verify_jwt_in_request, get_jwt, create_access_token
     from flask_jwt_extended.exceptions import JWTExtendedException
     from jwt.exceptions import PyJWTError
     try:
-        verify_jwt_in_request(locations=["cookies"])
+        verify_jwt_in_request(locations=["headers"])
         claims = get_jwt()
     except (JWTExtendedException, PyJWTError) as exc:
         logger.warning(f"token-refresh rejected: {exc}")
         return jsonify({"status": "error", "message": "Authentication required."}), 401
 
-    if claims.get("role") != "internal":
+    if claims.get("role") != "internal" or "tenant_id" not in claims:
         # Organiser tokens must not be able to use this endpoint to extend themselves.
         return jsonify({"status": "error", "message": "Forbidden."}), 403
+
+    tenant_id = claims["tenant_id"]
 
     new_token = create_access_token(
         identity="internal_grabber",
         expires_delta=_INTERNAL_TOKEN_EXPIRY,
-        additional_claims={"role": "internal"},
+        additional_claims={"role": "internal", "tenant_id": tenant_id},
     )
     logger.debug("Issued refreshed internal token to audio_grabber")
     return jsonify({"token": new_token}), 200
@@ -949,6 +1007,8 @@ def provider_status(tenant_id):
     Check whether the models for a given tenant are fully loaded and ready.
     The frontend polls this during the loading screen.
     """
+    _assert_tenant_ownership(tenant_id)
+
     if registry.is_pipeline_ready(tenant_id):
         return jsonify({"status": "ready"}), 200
     return jsonify({"status": "warming_up"}), 200
