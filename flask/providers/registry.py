@@ -143,8 +143,12 @@ class ProviderRegistry:
 
         #performing Atomic Writes to the registry with thread lock to avoid race conditions
         with self._lock:
+            # only fall back to the caller supplied value if no owner is set yet
+            existing_owner = (self._tenants.get(tenant_id) or {}).get("organizer_id")
+            resolved_owner = existing_owner if existing_owner is not None else organizer_id
             # always reset both slots on reconfigure to avoid stale provider bleedover
-            self._tenants[tenant_id] = {"transcription": None, "translation": None, "organizer_id": organizer_id}
+            self._tenants[tenant_id] = {"transcription": None, "translation": None, "organizer_id": resolved_owner}
+
 
             if transcription:
                 t_config = dict(transcription)
@@ -202,6 +206,30 @@ class ProviderRegistry:
                 f"[Registry] Tenant '{tenant_id}' configured the same provider '{t_name}' "
                 "in both slots. Consider using a single TranscriptionTranslationProvider slot instead."
             )
+
+    def claim(self, tenant_id: str, organizer_id: int) -> None:
+        """
+        Stamp an organizer as the owner of a freshly-created tenant_id before
+        any provider is configured
+        """
+        with self._lock:
+            if tenant_id not in self._tenants:
+                self._tenants[tenant_id] = {
+                    "transcription": None,
+                    "translation": None,
+                    "organizer_id": organizer_id,
+                }
+                logger.info(
+                    f"[Registry] Tenant '{tenant_id}' pre-claimed by organizer_id={organizer_id}"
+                )
+            else:
+                # Already exists, only stamp if still unclaimed.
+                existing = self._tenants[tenant_id]
+                if existing.get("organizer_id") is None:
+                    existing["organizer_id"] = organizer_id
+                    logger.info(
+                        f"[Registry] Tenant '{tenant_id}' late-claimed by organizer_id={organizer_id}"
+                    )
 
     def check_ownership(self, tenant_id: str, organizer_id: int) -> bool:
         """Returns True if the tenant is owned by the given organizer_id or has not been claimed yet."""

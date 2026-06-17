@@ -66,6 +66,9 @@ Instead of forcing clients to track UUIDs, `POST /session?source=mic|file|url|st
 **Safe defaults.**
 Binds `127.0.0.1` only by default; `FLASK_DEBUG=false` (the Werkzeug debugger over network = RCE — explicit warning if misconfigured). CORS origins are env-driven, defaulting to localhost only.
 
+**Authentication.**
+All API endpoints now require JWT authentication. The app requires `JWT_SECRET_KEY` (≥32 chars) to start. Create a first admin user using `uv run python auth/create_superuser.py`. In production, use `JWT_COOKIE_SECURE=true`, `DATABASE_URL` (PostgreSQL), and `RATELIMIT_STORAGE_URI` (Redis).
+
 ---
 
 ## REST Endpoints

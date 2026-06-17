@@ -543,6 +543,22 @@ def _session_logic(success_status: int = 200):
     with session_lock:
         latest_session_by_source[source] = (new_tenant_id, time.time())
 
+    # Opportunistically bind the caller as owner at session creation so that no
+    # other authenticated user can claim this tenant_id via POST /configure
+    try:
+        from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+        from flask_jwt_extended.exceptions import JWTExtendedException
+        from jwt.exceptions import PyJWTError
+        from auth.models import Organizer
+        verify_jwt_in_request(optional=True)
+        email = get_jwt_identity()
+        if email:
+            organizer = Organizer.query.filter_by(email=email).first()
+            if organizer:
+                registry.claim(new_tenant_id, organizer.id)
+    except (JWTExtendedException, PyJWTError):
+        pass  
+
     logger.info(f"New session for source={source}: tenant_id={new_tenant_id}")
     return {"tenant_id": new_tenant_id, "source": source}, success_status
 
@@ -600,6 +616,7 @@ atexit.register(cleanup_grabbers)
 
 def _get_transcript_logic(chunk_id):
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     with transcripts_lock:
         t = dict(transcriptd.get(tenant_id, {}))
     if len(t) == 0:
@@ -614,6 +631,7 @@ def _get_transcript_logic(chunk_id):
 
 def _first_transcript_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     with transcripts_lock:
         t = dict(transcriptd.get(tenant_id, {}))
     if len(t) == 0:
@@ -632,6 +650,7 @@ def _first_transcript_logic():
 
 def _pop_first_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     sentences = _wants_sentences()
     fromid = _parse_int_arg(request.args, 'from', default=0)
 
@@ -658,6 +677,7 @@ def _pop_first_logic():
 
 def _latest_transcript_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     with transcripts_lock:
         t = dict(transcriptd.get(tenant_id, {}))
     if len(t) == 0:
@@ -676,6 +696,7 @@ def _latest_transcript_logic():
 
 def _pop_latest_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     sentences = _wants_sentences()
     untilid = _parse_int_arg(request.args, 'until', default=int(time.time() * 1000))
 
@@ -702,6 +723,7 @@ def _pop_latest_logic():
 
 def _delete_transcript_logic(chunk_id):
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     chunk_id = None if chunk_id is None else str(chunk_id)
     with transcripts_lock:
         stored = transcriptd.get(tenant_id, {})
@@ -713,6 +735,7 @@ def _delete_transcript_logic(chunk_id):
 
 def _list_transcripts_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     sentences = _wants_sentences()
     fromid = _parse_int_arg(request.args, 'from', default=0)
     untilid = _parse_int_arg(request.args, 'until', default=int(time.time() * 1000))
@@ -725,6 +748,7 @@ def _list_transcripts_logic():
 
 def _transcripts_size_logic():
     tenant_id = _resolve_tenant(request.args)
+    _assert_tenant_ownership(tenant_id)
     sentences = _wants_sentences()
     fromid = _parse_int_arg(request.args, 'from', default=0)
     untilid = _parse_int_arg(request.args, 'until', default=int(time.time() * 1000))
@@ -1059,6 +1083,7 @@ class Transcripts(Resource):
         'until': _UNTIL_PARAM,
     })
     @api.response(200, 'Success', list_transcripts_response_model)
+    @organizer_required
     def get(self):
         '''List all transcripts for a tenant, filtered by the from/until chunk range.'''
         return jsonify(_list_transcripts_logic())
@@ -1066,6 +1091,8 @@ class Transcripts(Resource):
 
 @api.route('/transcripts/count')
 class TranscriptsCount(Resource):
+    method_decorators = [organizer_required]
+
     @api.doc(params={
         'tenant_id': _TENANT_PARAM,
         'source': _SOURCE_PARAM,
@@ -1081,6 +1108,8 @@ class TranscriptsCount(Resource):
 
 @api.route('/transcripts/first')
 class TranscriptsFirst(Resource):
+    method_decorators = [organizer_required]
+
     @api.doc(params={
         'tenant_id': _TENANT_PARAM,
         'source': _SOURCE_PARAM,
@@ -1106,6 +1135,8 @@ class TranscriptsFirst(Resource):
 
 @api.route('/transcripts/latest')
 class TranscriptsLatest(Resource):
+    method_decorators = [organizer_required]
+
     @api.doc(params={
         'tenant_id': _TENANT_PARAM,
         'source': _SOURCE_PARAM,
@@ -1131,6 +1162,8 @@ class TranscriptsLatest(Resource):
 
 @api.route('/transcripts/<int:chunk_id>')
 class TranscriptByID(Resource):
+    method_decorators = [organizer_required]
+
     @api.doc(params={
         'tenant_id': _TENANT_PARAM,
         'source': _SOURCE_PARAM,
@@ -1169,6 +1202,8 @@ class TranscribeLegacy(Resource):
 
 @api.route('/list_transcripts', doc=False)
 class ListTranscriptsLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def get(self):
         '''DEPRECATED: use GET /transcripts.'''
         return jsonify(_list_transcripts_logic())
@@ -1176,6 +1211,8 @@ class ListTranscriptsLegacy(Resource):
 
 @api.route('/transcripts_size', doc=False)
 class TranscriptsSizeLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def get(self):
         '''DEPRECATED: use GET /transcripts/count.'''
         return jsonify(_transcripts_size_logic())
@@ -1183,6 +1220,8 @@ class TranscriptsSizeLegacy(Resource):
 
 @api.route('/get_transcript', doc=False)
 class GetTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def get(self):
         '''DEPRECATED: use GET /transcripts/<chunk_id>.'''
         return jsonify(_get_transcript_logic(request.args.get('chunk_id')))
@@ -1190,6 +1229,8 @@ class GetTranscriptLegacy(Resource):
 
 @api.route('/get_first_transcript', doc=False)
 class GetFirstTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def get(self):
         '''DEPRECATED: use GET /transcripts/first.'''
         return jsonify(_first_transcript_logic())
@@ -1197,6 +1238,8 @@ class GetFirstTranscriptLegacy(Resource):
 
 @api.route('/pop_first_transcript', doc=False)
 class PopFirstTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def delete(self):
         '''DEPRECATED: use DELETE /transcripts/first.'''
         return jsonify(_pop_first_logic())
@@ -1209,6 +1252,8 @@ class PopFirstTranscriptLegacy(Resource):
 
 @api.route('/get_latest_transcript', doc=False)
 class GetLatestTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def get(self):
         '''DEPRECATED: use GET /transcripts/latest.'''
         return jsonify(_latest_transcript_logic())
@@ -1216,6 +1261,8 @@ class GetLatestTranscriptLegacy(Resource):
 
 @api.route('/pop_latest_transcript', doc=False)
 class PopLatestTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def delete(self):
         '''DEPRECATED: use DELETE /transcripts/latest.'''
         return jsonify(_pop_latest_logic())
@@ -1228,6 +1275,8 @@ class PopLatestTranscriptLegacy(Resource):
 
 @api.route('/delete_transcript', doc=False)
 class DeleteTranscriptLegacy(Resource):
+    method_decorators = [organizer_required]
+
     def delete(self):
         '''DEPRECATED: use DELETE /transcripts/<chunk_id>.'''
         return jsonify(_delete_transcript_logic(request.args.get('chunk_id')))

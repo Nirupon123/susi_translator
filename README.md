@@ -1,86 +1,105 @@
 # SUSI Translator
 
-Real-time audio transcription + optional translation prototype with:
+A production-ready, real-time speech-to-text (transcription) and translation HTTP API built with Flask. It accepts streamed audio chunks, processes them asynchronously using a pluggable provider architecture (e.g., OpenAI, Deepgram, Whisper.cpp), and exposes REST endpoints and a modern web dashboard for clients to consume the resulting text.
 
-- a **Django API backend** (`django/`) - primary path
-- a **Flask API backend** (`flask/`) - legacy/compat path
-- browser/Python clients that capture audio chunks and push them to the API
+## High-Level Architecture
+
+1. **Audio Sources**: Clients capture audio from a microphone, local file, live URL, `stdin`, or YouTube, and continuously `POST` base64 encoded chunks to the API.
+2. **REST API**: A Flask application queues the incoming chunks safely.
+3. **Pluggable Providers**: A background worker pulls chunks from the queue and routes them to configurable external or internal AI providers for transcription and optional translation.
+4. **Consumption**: Clients or web dashboards poll the REST endpoints to receive live, sentence-reflowed text.
+
+## Features
+
+- **Provider Registry**: Dynamically configure the transcription and translation AI models per-session. Support for OpenAI, Deepgram, and local Whisper models out-of-the-box.
+- **Secure by Default**: Strict JWT-based authentication, IDOR (Insecure Direct Object Reference) prevention, and tenant isolation. No anonymous access is permitted.
+- **Rate Limiting**: Built-in endpoints are protected against abuse via Redis-backed rate limiters in production.
+- **Queue Deduplication**: Intelligently deduplicates overlapping audio chunks to optimize API utilization and lower provider costs.
+- **Modern Dashboard**: A fully featured dashboard to configure providers, view active streams, and manage credentials.
+
+---
 
 ## Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/)
-- pip (optional; only needed for the legacy fallback path)
+- [uv](https://docs.astral.sh/uv/) for fast dependency management
+- ffmpeg (must be installed on your `PATH` if using `file`, `url`, or `youtube` audio sources)
 
-## Setup (Primary: uv)
+## Setup
+
+Use `uv` to automatically create a virtual environment (`.venv/`) and install all required dependencies:
 
 ```bash
 uv sync
 ```
 
-This creates `.venv/` and installs dependencies from `pyproject.toml`.
+---
 
-## Run Django backend (recommended)
+## Running the Server
 
-```bash
-cd django
-uv run python manage.py migrate
-uv run python manage.py runserver 0.0.0.0:5040
-```
+### 1. Configure the Environment
 
-Swagger:
+Copy `.env.example` to `.env` in the `flask/` directory.
 
-- <http://localhost:5040/swagger/>
+### 2. Create the First Admin
 
-## Run Flask backend (legacy)
+Before you can log into the dashboard or configure providers, you must create a superuser:
 
 ```bash
-cd flask
-uv run python transcribe_server.py
+uv run python flask/auth/create_superuser.py
 ```
 
-## Environment variables
+### 3. Start the Flask Backend
 
-Copy `.env.example` to `.env` and adjust values. Highlights:
+```bash
+uv run python flask/transcribe_server.py
+```
 
-Whisper / transcription:
+The Web Dashboard and Swagger API documentation will now be available at `http://127.0.0.1:5040`.
 
-- `WHISPER_SERVER_USE` (`true` to use whisper.cpp HTTP server, `false` for local models)
-- `WHISPER_SERVER` (base URL of the whisper.cpp server, e.g. `http://localhost:8007`)
-- `WHISPER_MODEL_FAST` / `WHISPER_MODEL_SMART` (model names for the local fast/smart paths; legacy single `WHISPER_MODEL` still honoured)
-- `WHISPER_DEVICE`
-- `TRANSCRIBE_SERVER_URL`
+---
 
-Flask backend bind / safety:
+## Environment Variables & Production Defaults
 
-- `FLASK_HOST` (default `127.0.0.1` — loopback only)
-- `FLASK_PORT` (default `5040`)
-- `FLASK_DEBUG` (default `false`; never combine `true` with a non-loopback host — Werkzeug debugger is RCE)
-- `CORS_ALLOWED_ORIGINS` (comma-separated; default localhost only; pass `*` only if you really mean it)
-- `SESSION_TTL_SECONDS` (default `7200`; per-source `?source=…` session pointer expiry)
+**BREAKING CHANGE**: All API clients (including transcription viewing and audio grabbing) now strictly require authentication.
 
-## Legacy pip fallback
+### Authentication
 
-`requirements.txt` is kept for compatibility, but `uv sync` is the supported install flow.
+- `JWT_SECRET_KEY` (**REQUIRED**): Must be a strong, unpredictable string of ≥32 characters. The server will safely refuse to start without this set.
 
-## Audio grabber (client-side ingestion)
+### Production Readiness
 
-The grabber under `flask/audio_grabber.py` captures audio from one of five
-sources and streams it to the transcription server. Each source runs
-client-side; the server only ever receives already-decoded base64 PCM via
-`POST /transcripts`.
+For a production deployment, ensure the following are configured in your environment:
 
-| Source    | Backend                 | Extra requirements                |
-| --------- | ----------------------- | --------------------------------- |
-| `mic`     | PyAudio                 | a working input device            |
-| `file`    | pydub + ffmpeg          | ffmpeg on PATH                    |
-| `url`     | ffmpeg                  | ffmpeg on PATH                    |
-| `stdin`   | raw PCM passthrough     | none                              |
+- `JWT_COOKIE_SECURE=true` (Requires the server to run over HTTPS)
+- `JWT_COOKIE_CSRF_PROTECT=true`
+- `DATABASE_URL` (Use PostgreSQL, not the default SQLite in production. e.g., `postgresql://user:pass@localhost:5432/susi`)
+- `RATELIMIT_STORAGE_URI` (Use a Redis backend, e.g., `redis://localhost:6379`, not `memory://`)
+- `CORS_ALLOWED_ORIGINS` (Pass explicit origins, e.g., `https://yourdomain.com`. Default is localhost only)
+- `FLASK_DEBUG=false` (Never combine `true` with a non-loopback host — Werkzeug debugger is RCE)
+- `FLASK_HOST` (Bind to `0.0.0.0` to expose externally, but default `127.0.0.1` is recommended if running behind a reverse proxy like Nginx)
+
+---
+
+## Audio Grabber (Client-Side Ingestion)
+
+The grabber script (`flask/audio_grabber.py`) captures audio from one of five sources and streams it to the transcription server.
+
+| Source    | Backend                 | Extra Requirements                    |
+| --------- | ----------------------- | ------------------------------------- |
+| `mic`     | PyAudio                 | a working input device                |
+| `file`    | pydub + ffmpeg          | ffmpeg on PATH                        |
+| `url`     | ffmpeg                  | ffmpeg on PATH                        |
+| `stdin`   | raw PCM passthrough     | none                                  |
 | `youtube` | yt-dlp + ffmpeg         | ffmpeg on PATH (yt-dlp via `uv sync`) |
 
-Examples:
+**Authentication Note:** `audio_grabber.py` requires an authentication token to push data. Provide it via the `GRABBER_AUTH_TOKEN` environment variable or the `--auth-token` CLI flag. (You can generate a long-lived internal token or grab a session token from the dashboard).
+
+### Usage Examples
 
 ```bash
+export GRABBER_AUTH_TOKEN="your_internal_or_session_token"
+
 uv run python flask/audio_grabber.py mic
 uv run python flask/audio_grabber.py file --path talk.mp3 --realtime
 uv run python flask/audio_grabber.py url --url https://example.com/live.m3u8
@@ -89,43 +108,33 @@ ffmpeg -i input.wav -f s16le -ac 1 -ar 16000 - | \
     uv run python flask/audio_grabber.py stdin
 ```
 
-Read the resulting transcripts back via `?source=<name>`:
+### YouTube Authentication
 
-```bash
-curl "http://localhost:5040/transcripts?source=youtube"
-curl -X DELETE "http://localhost:5040/transcripts/first?source=youtube"
-```
+YouTube increasingly returns:
 
-### YouTube authentication ("Sign in to confirm you're not a bot")
-
-YouTube increasingly returns
-
-```
+```text
 ERROR: [youtube] <id>: Sign in to confirm you're not a bot.
        Use --cookies-from-browser or --cookies for the authentication.
 ```
 
-for requests from data-center IPs, VPNs, or WSL. This is a YouTube
-policy, not a bug; yt-dlp itself can't bypass it. Pass cookies from a
-logged-in YouTube session using one of these mutually exclusive flags:
+This applies particularly for requests from data-center IPs, VPNs, or WSL. To bypass it, pass cookies from a logged-in YouTube session using one of these mutually exclusive flags:
 
 ```bash
-# Option A: read cookies straight from your browser:
+# Option A: Read cookies directly from your local browser:
 uv run python flask/audio_grabber.py youtube \
     --url https://www.youtube.com/watch?v=EXAMPLE_ID \
     --cookies-from-browser chrome
 
-# Option B: export cookies.txt from your browser (Netscape format,
-# via a 'Get cookies.txt LOCALLY' or similar extension while logged
-# into youtube.com), then point --cookies at the file. This is the
-# reliable path on WSL:
+# Option B: Export cookies.txt (Netscape format) using a browser extension,
+# then point --cookies at the file. This is required for WSL:
 uv run python flask/audio_grabber.py youtube \
     --url https://www.youtube.com/watch?v=EXAMPLE_ID \
     --cookies /path/to/youtube-cookies.txt
 ```
 
-Treat the cookies file like a credential — it grants access to your
-YouTube account. Do not commit it to git.
+> **Warning:** Treat the `cookies.txt` file like a credential — it grants access to your YouTube account. Do not commit it to version control.
+
+---
 
 ## Tests
 
@@ -136,17 +145,3 @@ uv sync --group dev      # one-time: install pytest into .venv
 uv run pytest            # run the full suite
 uv run pytest -v         # verbose
 ```
-
-The tests pin `WHISPER_SERVER_USE=true` in `flask/tests/conftest.py` so they
-do not download or load multi-hundred-megabyte whisper models. They exercise:
-
-- env-var helpers and query-string parsing
-- the `URLSource` security validator (rejects `file://`, `concat:`, leading `-`, etc.)
-- `merge_and_split_transcripts` (sentence boundaries, empty input, dict shape)
-- `_next_payload` queue dedup with correct `task_done()` accounting
-- `clean_old_transcripts` (stale chunks, empty tenants, non-numeric ids)
-- `_resolve_tenant` including session TTL expiry
-- Flask test_client integration for `/session`, `/transcripts`,
-  `/transcripts/{chunk_id}`, `/transcripts/first`, `/transcripts/latest`,
-  `/transcripts/count` (including malformed input -> 400 not 500), plus the
-  deprecated RPC-style aliases.
