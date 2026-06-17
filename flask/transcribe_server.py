@@ -1297,6 +1297,7 @@ def config_page(tenant_id: str):
     redir = _require_login()
     if redir:
         return redir
+    _assert_tenant_ownership(tenant_id)
     return render_template("config.html", tenant_id=tenant_id)
 
 
@@ -1306,6 +1307,7 @@ def stream_page(tenant_id: str):
     redir = _require_login()
     if redir:
         return redir
+    _assert_tenant_ownership(tenant_id)
     video_url = request.args.get("url", "")
     return render_template("stream.html", tenant_id=tenant_id, video_url=video_url)
 
