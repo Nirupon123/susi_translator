@@ -11,9 +11,11 @@ import numpy as np
 import threading
 import logging
 import collections
-import asyncio
+import logging
+import io
 import base64
-import edge_tts
+import soundfile as sf
+from supertonic import TTS
 import json
 import os
 import queue
@@ -125,35 +127,53 @@ SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
 
 
 # --- TTS HELPER ---
-TTS_VOICES = {
-    "en": "en-US-AriaNeural",
-    "de": "de-DE-AmalaNeural",
-    "fr": "fr-FR-DeniseNeural",
-    "es": "es-ES-ElviraNeural",
-    "hi": "hi-IN-SwaraNeural",
-    "zh": "zh-CN-XiaoxiaoNeural",
-    "ar": "ar-EG-SalmaNeural",
-    "pt": "pt-BR-FranciscaNeural",
-    "ru": "ru-RU-SvetlanaNeural",
-    "ja": "ja-JP-NanamiNeural",
-    "ko": "ko-KR-SunHiNeural",
-    "it": "it-IT-ElsaNeural"
+supertonic_tts = TTS(auto_download=True)
+
+SUPERTONIC_SUPPORTED_LANGS = {
+    "ar", "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", 
+    "de", "el", "hi", "hu", "id", "it", "ja", "ko", "lv", "lt", 
+    "pl", "pt", "ro", "ru", "sk", "sl", "es", "sv", "tr", "uk", "vi"
 }
 
-async def _get_tts(text, voice):
-    communicate = edge_tts.Communicate(text, voice)
-    audio_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+# Map specific languages to different Supertonic voice styles for variety
+TTS_VOICE_STYLES = {
+    "en": "M1",
+    "de": "M2",
+    "fr": "F1",
+    "es": "F2",
+    "hi": "M3",
+    "ar": "M4",
+    "pt": "F3",
+    "ru": "F4",
+    "ja": "F5",
+    "ko": "M5",
+    "it": "M1",
+}
 
 def generate_tts_sync(text, target_lang):
-    voice = TTS_VOICES.get(target_lang)
-    if not voice or not text.strip():
+    if not text.strip():
         return None
     try:
-        audio_bytes = asyncio.run(_get_tts(text, voice))
+        # Determine language (fallback to language-agnostic "na" if unsupported)
+        lang_tag = target_lang if target_lang in SUPERTONIC_SUPPORTED_LANGS else "na"
+        
+        # Get voice style, fallback to F1 if not mapped
+        style_name = TTS_VOICE_STYLES.get(target_lang, "F1")
+        voice_style = supertonic_tts.get_voice_style(voice_name=style_name)
+        
+        wav, duration = supertonic_tts.synthesize(
+            text=text, 
+            lang=lang_tag, 
+            voice_style=voice_style,
+            total_steps=8,  # Default medium quality
+            speed=1.0
+        )
+        
+        # Supertonic outputs a numpy array. Convert to 16-bit PCM WAV.
+        buf = io.BytesIO()
+        sf.write(buf, wav.squeeze(), 44100, format='WAV', subtype='PCM_16')
+        audio_bytes = buf.getvalue()
+        
         return base64.b64encode(audio_bytes).decode('utf-8')
     except Exception as e:
         logger.error(f"TTS Error: {e}")

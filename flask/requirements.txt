@@ -10,8 +10,9 @@ django
 django-cors-headers
 djangorestframework
 drf-yasg
-edge-tts
 flask
+supertonic
+soundfile
 flask-admin
 flask-cors
 flask-restx
