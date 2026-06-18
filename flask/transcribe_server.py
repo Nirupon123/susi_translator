@@ -846,7 +846,7 @@ def configure_provider():
         if email:
             organizer = Organizer.query.filter_by(email=email).first()
 
-            room = Room.query.get(tenant_id)
+            room = db.session.get(Room, tenant_id)
             if room:
                 room.configured = True
                 room.stream_type = data.get('stream_type')
@@ -1094,7 +1094,7 @@ def stop_event(tenant_id):
 
     try:
         from auth.models import Room, db
-        room = Room.query.get(tenant_id)
+        room = db.session.get(Room, tenant_id)
         if room:
             db.session.delete(room)
             db.session.commit()
