@@ -30,6 +30,7 @@ dependencies = [
     "torch",
     "transformers",
     "yt-dlp",
+    "cryptography>=49.0.0",
 ]
 
 [tool.uv]
