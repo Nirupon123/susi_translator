@@ -29,8 +29,24 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./static:/app/static:ro
+      - certbot_certs:/etc/letsencrypt
     depends_on:
       - web
+    networks:
+      - susi_net
+
+  certbot:
+    image: certbot/certbot
+    container_name: susi_certbot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./certbot:/opt/certbot:ro
+      - certbot_certs:/etc/letsencrypt
+    entrypoint: "/opt/certbot/entrypoint.sh"
+    depends_on:
+      - nginx
     networks:
       - susi_net
 
@@ -42,3 +58,4 @@ networks:
 
 volumes:
   model_cache:
+  certbot_certs:

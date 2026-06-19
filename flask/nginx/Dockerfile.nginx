@@ -3,5 +3,5 @@ FROM nginx:alpine
 
 RUN apk add --no-cache openssl
 
-COPY generate_ssl.sh /docker-entrypoint.d/generate_ssl.sh
-RUN chmod +x /docker-entrypoint.d/generate_ssl.sh
+COPY bootstrap_ssl.sh /docker-entrypoint.d/bootstrap_ssl.sh
+RUN chmod +x /docker-entrypoint.d/bootstrap_ssl.sh
