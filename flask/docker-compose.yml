@@ -44,7 +44,7 @@ services:
     volumes:
       - ./certbot:/opt/certbot:ro
       - certbot_certs:/etc/letsencrypt
-    entrypoint: "/opt/certbot/entrypoint.sh"
+    entrypoint: ["/bin/sh", "/opt/certbot/entrypoint.sh"]
     depends_on:
       - nginx
     networks:
