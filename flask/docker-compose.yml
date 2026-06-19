@@ -23,6 +23,8 @@ services:
       dockerfile: Dockerfile.nginx
     container_name: susi_nginx
     restart: always
+    env_file:
+      - .env
     ports:
       - "80:80"
       - "443:443"
