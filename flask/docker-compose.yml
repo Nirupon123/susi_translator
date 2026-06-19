@@ -36,15 +36,15 @@ services:
       - susi_net
 
   certbot:
-    image: certbot/certbot
+    image: alpine:latest
     container_name: susi_certbot
     restart: always
     env_file:
       - .env
     volumes:
-      - ./certbot:/opt/certbot:ro
+      - ./certbot:/opt/certbot
       - certbot_certs:/etc/letsencrypt
-    entrypoint: ["/bin/sh", "/opt/certbot/entrypoint.sh"]
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache certbot curl && /bin/sh /opt/certbot/entrypoint.sh"]
     depends_on:
       - nginx
     networks:
