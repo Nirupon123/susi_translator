@@ -94,9 +94,9 @@
 
 {% block scripts %}
 <script>
-    const TENANT_ID = "{{ tenant_id }}";
-    const VIDEO_URL = "{{ video_url }}";
-    const STREAM_TYPE = "{{ stream_type }}";
+    const TENANT_ID = {{ tenant_id | tojson }};
+    const VIDEO_URL = {{ video_url | tojson }};
+    const STREAM_TYPE = {{ stream_type | tojson }};
 
     // Navigation Fix & Ghost Room Protection
     window.onload = async function() {

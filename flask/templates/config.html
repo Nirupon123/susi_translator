@@ -121,7 +121,7 @@
 
 {% block scripts %}
 <script>
-    const TENANT_ID = "{{ tenant_id }}";
+    const TENANT_ID = {{ tenant_id | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/config.js') }}?v=5"></script>
 {% endblock %}
