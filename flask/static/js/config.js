@@ -47,57 +47,18 @@ function toggleTranslation() {
 
 function onTranscriptionModelChange() {
     const model = document.getElementById('transcription-model').value;
-    const apikeyGroup = document.getElementById('transcription-apikey-group');
     const whisperSizeGroup = document.getElementById('whisper-size-group');
-
-    // Show API key field for any cloud API model (OpenAI, etc.)
-    const needsApiKey = ['deepl', 'openai'].includes(model);
-    apikeyGroup.classList.toggle('hidden', !needsApiKey);
 
     // Show model size only for local Whisper
     const isWhisperLocal = model === 'whisper_local';
     whisperSizeGroup.classList.toggle('hidden', !isWhisperLocal);
-
-    // Update the API key label to reflect which service
-    const label = apikeyGroup.querySelector('label');
-    label.textContent = 'API Key / HF Token';
 }
 
 function onTranslationModelChange() {
-    const model = document.getElementById('translation-model').value;
-    const apikeyGroup = document.getElementById('translation-apikey-group');
-
-    // DeepL needs an API key; local NLLB does not.
-    const needsApiKey = ['deepl'].includes(model);
-    apikeyGroup.classList.toggle('hidden', !needsApiKey);
-
-    // Update the API key label to reflect which service
-    const label = apikeyGroup.querySelector('label');
-    label.textContent = 'API Key';
+    // No-op since we only use local models now
 }
 
-// --- API Key Visual Masking ---
-// After the user pastes/types a key and moves away from the field,
-// we replace the visible text with asterisks so someone looking over
-// their shoulder can't read the key. The real key is kept in a data
-// attribute and used during form submission.
-function _maskKeyField(inputEl) {
-    inputEl.addEventListener('blur', () => {
-        const realVal = inputEl.value;
-        // Only update if the field actually has a value and it's not currently showing the masked dots
-        if (realVal && inputEl.dataset.masked !== 'true') {
-            inputEl.dataset.realKey = realVal;
-            inputEl.value = '●'.repeat(Math.min(realVal.length, 24));
-            inputEl.dataset.masked = 'true';
-        }
-    });
-    inputEl.addEventListener('focus', () => {
-        if (inputEl.dataset.masked === 'true') {
-            inputEl.value = inputEl.dataset.realKey || '';
-            inputEl.dataset.masked = 'false';
-        }
-    });
-}
+
 
 document.addEventListener('DOMContentLoaded', async () => {
     // Auto-redirect if the room was already configured (e.g. user pressed back button)
@@ -119,8 +80,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    _maskKeyField(document.getElementById('transcription-apikey'));
-    _maskKeyField(document.getElementById('translation-apikey'));
+
 });
 
 
@@ -170,10 +130,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     const sourceLang = document.getElementById('source-lang').value;
     const transcriptionModel = document.getElementById('transcription-model').value;
     const modelSize = document.getElementById('model-size').value;
-    const transcriptionApiKey = (() => {
-        const el = document.getElementById('transcription-apikey');
-        return el.dataset.realKey || el.value.trim();
-    })();
+
     const translationEnabled = document.getElementById('translation-toggle').checked;
 
     // build transcription block
@@ -181,9 +138,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
         provider_name: transcriptionModel,
         config: { model_size: modelSize }
     };
-    if (transcriptionApiKey) {
-        transcriptionBlock.config.api_key = transcriptionApiKey;
-    }
+
 
     // build configure payload
     const payload = {
@@ -196,10 +151,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     // add translation block only if enabled
     if (translationEnabled) {
         const translationModel = document.getElementById('translation-model').value;
-        const translationApiKey = (() => {
-            const el = document.getElementById('translation-apikey');
-            return el.dataset.realKey || el.value.trim();
-        })();
+
 
         // target_lang is intentionally omitted — each viewer selects their own
         // language from the stream room. source_lang tells the model what the
@@ -209,9 +161,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
             source_lang: sourceLang,
             config: {}
         };
-        if (translationApiKey) {
-            payload.translation.config.api_key = translationApiKey;
-        }
+
     }
 
         // Send the configuration to the server
