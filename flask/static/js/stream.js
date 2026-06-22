@@ -72,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function buildSseUrl(targetLang) {
-        let url = `/api/v1/translate/stream?tenant_id=${TENANT_ID}&source=youtube&last_chunk_id=${lastChunkId}&audio=${playAudio}`;
+        let url = `/api/v1/translate/stream?tenant_id=${TENANT_ID}&source=${encodeURIComponent(STREAM_TYPE)}&last_chunk_id=${lastChunkId}&audio=${playAudio}`;
         if (targetLang) url += `&target_lang=${encodeURIComponent(targetLang)}`;
         return url;
     }

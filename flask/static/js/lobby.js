@@ -98,7 +98,7 @@ async function submitRoom() {
         const response = await fetch('/session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: 'youtube', name: name }),
+            body: JSON.stringify({ source: 'unspecified', name: name }),
             credentials: 'same-origin',
         });
 

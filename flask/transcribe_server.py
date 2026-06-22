@@ -179,7 +179,7 @@ grabber_lock = threading.Lock()
 
 # FIFO queue of pending audio chunks awaiting transcription.
 audio_stack = queue.Queue()
-VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube"}
+VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube", "unspecified"}
 latest_session_by_source = {s: None for s in VALID_SOURCES}
 session_lock = threading.Lock()
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
@@ -476,11 +476,11 @@ configure_input_model = api.model('ConfigureRequest', {
             'Rejected with HTTP 400 for invalid scheme, missing host, or (for youtube) non-allowlisted domain.'
         ),
     ),
-    'source_type': fields.String(
+    'stream_type': fields.String(
         required=False,
-        enum=['youtube', 'url'],
+        enum=['youtube', 'url', 'file', 'mic'],
         description=(
-            'Audio source type for stream_url. '
+            'Audio stream type for stream_url. '
             '"youtube" (default) enforces a recognised YouTube/Twitch/Vimeo host allowlist. '
             '"url" allows any HTTP/HTTPS URL with a non-empty host.'
         ),
@@ -520,7 +520,7 @@ size_response_model = api.model('SizeResponse', {
 session_input_model = api.model('SessionRequest', {
     'source': fields.String(
         required=True,
-        description='Input source name; one of: mic, file, url, stdin, youtube',
+        description='Input source name; one of: mic, file, url, stdin, youtube, unspecified',
         enum=sorted(VALID_SOURCES),
     ),
 })
@@ -534,10 +534,10 @@ session_response_model = api.model('SessionResponse', {
 # Shared Swagger parameter blocks
 _TENANT_PARAM = {'description': 'Tenant ID', 'default': '0000'}
 _SOURCE_PARAM = {
-    'description': 'Resolve to the latest session for a source (mic|file|url|stdin|youtube). '
+    'description': 'Resolve to the latest session for a source (mic|file|url|stdin|youtube|unspecified). '
                    'Ignored if tenant_id is given. Unknown values return HTTP 400.',
     'type': 'string',
-    'enum': ['mic', 'file', 'url', 'stdin', 'youtube'],
+    'enum': ['mic', 'file', 'url', 'stdin', 'youtube', 'unspecified'],
 }
 _SENTENCES_PARAM = {'description': 'Merge and split transcripts into sentences', 'type': 'boolean', 'default': False}
 _FROM_PARAM = {'description': 'Starting chunk ID', 'type': 'string', 'default': '0'}
@@ -866,16 +866,16 @@ def configure_provider():
             configured.append(f"translation='{translation.get('provider_name')}'")
 
         stream_url = data.get("stream_url")
-        source_type = data.get("source_type", "youtube")
+        stream_type = data.get("stream_type", "youtube")
 
         if stream_url:
-            if source_type == "youtube":
+            if stream_type == "youtube":
                 YouTubeSource._validate_url(stream_url)
-            elif source_type == "url":
+            elif stream_type == "url":
                 if not organizer or not organizer.is_admin:
                     return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs."}), 403
                 URLSource._validate_url(stream_url)
-            elif source_type == "file":
+            elif stream_type == "file":
                 if not os.path.exists(stream_url):
                     return jsonify({"status": "error", "message": "File not found"}), 400
                 if not stream_url.startswith(UPLOAD_FOLDER):
@@ -884,7 +884,7 @@ def configure_provider():
                 return jsonify({
                     "status": "error",
                     "message": (
-                        f"Unknown source_type {source_type!r}. "
+                        f"Unknown stream_type {stream_type!r}. "
                         "Must be 'youtube', 'url', or 'file'."
                     ),
                 }), 400
@@ -907,7 +907,7 @@ def configure_provider():
 
             logger.info(
                 f"Spawning audio_grabber for tenant {tenant_id} "
-                f"on {source_type} url {stream_url}"
+                f"on {stream_type} url {stream_url}"
             )
             scheme = "https" if os.getenv("FLASK_SSL_CONTEXT") else "http"
             port = os.getenv('FLASK_PORT', '5040')
@@ -918,7 +918,7 @@ def configure_provider():
                 "audio_grabber.py",
                 "--tenant", tenant_id,
                 "--server", server_url,
-                source_type,
+                stream_type,
                 "--url", stream_url,
             ]
             # Pass the auth token via environment variable
@@ -929,7 +929,7 @@ def configure_provider():
             grabber_env["GRABBER_AUTH_TOKEN"] = internal_token
 
             # Only applicable for the youtube source.
-            if source_type == "youtube":
+            if stream_type == "youtube":
                 cookies_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), "instance", "youtubecookies.txt"
                 )
