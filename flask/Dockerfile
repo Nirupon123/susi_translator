@@ -21,13 +21,18 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
-COPY requirements.txt .
 
-RUN uv venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN uv pip install --no-cache -r requirements.txt gunicorn gevent
+# Copy lockfiles from repo root 
+COPY pyproject.toml uv.lock ./
 
-COPY . .
+# Ensure the virtualenv created by `uv sync` is in the PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Install all production deps from the pinned lockfile
+RUN uv sync --frozen --no-dev
+
+# Copy Flask application code
+COPY flask/ .
 
 EXPOSE 5040
-CMD ["gunicorn", "--worker-class", "gthread", "-w", "1", "--threads", "16", "--timeout", "120", "-b", "0.0.0.0:5040", "transcribe_server:app"]
+CMD ["gunicorn", "--worker-class", "gevent", "-w", "1", "--timeout", "120", "-b", "0.0.0.0:5040", "transcribe_server:app"]

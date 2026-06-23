@@ -13,8 +13,9 @@ SUBDOMAIN=$(echo "$CERTBOT_DOMAIN" | sed 's/\.duckdns\.org//')
 
 echo "Sending TXT record to DuckDNS for subdomain: $SUBDOMAIN"
 
-# Update DuckDNS TXT record via API
-RESPONSE=$(curl -s "https://www.duckdns.org/update?domains=${SUBDOMAIN}&token=${DUCKDNS_TOKEN}&txt=${CERTBOT_VALIDATION}")
+# DuckDNS only supports GET requests, so the token must be in the URL.
+# We cannot use a POST request body to hide it from intermediate logs.
+RESPONSE=$(wget -qO- "https://www.duckdns.org/update?domains=${SUBDOMAIN}&token=${DUCKDNS_TOKEN}&txt=${CERTBOT_VALIDATION}")
 
 if [ "$RESPONSE" = "OK" ]; then
     echo "Successfully updated DuckDNS TXT record."

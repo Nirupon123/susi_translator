@@ -10,11 +10,20 @@ fi
 
 echo "Starting Certbot Let's Encrypt auto-renewal service for $DOMAIN_NAME..."
 
-chmod +x /opt/certbot/authenticator.sh
+chmod +x /opt/certbot-scripts/authenticator.sh
 
 # Main renewal loop
 while :; do
     echo "Checking certificate status for $DOMAIN_NAME..."
+
+    # If dummy certificates exist, remove them
+    # so Certbot can generate the real ones without crashing
+    if [ -f "/etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem" ] && [ ! -L "/etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem" ]; then
+        echo "Removing dummy certificates to allow Certbot to generate real ones..."
+        rm -rf "/etc/letsencrypt/live/${DOMAIN_NAME}"
+        rm -rf "/etc/letsencrypt/archive/${DOMAIN_NAME}"
+        rm -rf "/etc/letsencrypt/renewal/${DOMAIN_NAME}.conf"
+    fi
 
     # Obtain or renew certificate via DuckDNS DNS-01 challenge
     certbot certonly \
@@ -23,9 +32,9 @@ while :; do
         -m "${CERTBOT_EMAIL:-admin@${DOMAIN_NAME}}" \
         --manual \
         --preferred-challenges dns \
-        --manual-auth-hook /opt/certbot/authenticator.sh \
+        --manual-auth-hook /opt/certbot-scripts/authenticator.sh \
         -d "$DOMAIN_NAME" \
-        --cert-name susi \
+        --cert-name "${DOMAIN_NAME}" \
         --keep-until-expiring
 
     echo "Certbot check completed. Sleeping for 12 hours..."

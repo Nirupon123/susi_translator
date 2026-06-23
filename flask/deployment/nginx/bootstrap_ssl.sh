@@ -10,7 +10,8 @@ if [ -z "$DOMAIN_NAME" ]; then
     exit 1
 fi
 
-CERT_DIR="/etc/letsencrypt/live/susi"
+# Cert name matches DOMAIN_NAME 
+CERT_DIR="/etc/letsencrypt/live/${DOMAIN_NAME}"
 CERT_KEY="${CERT_DIR}/privkey.pem"
 CERT_CRT="${CERT_DIR}/fullchain.pem"
 
@@ -27,6 +28,11 @@ if [ ! -f "$CERT_CRT" ] || [ ! -f "$CERT_KEY" ]; then
 else
     echo "Certificates found at ${CERT_DIR}. Skipping bootstrap."
 fi
+
+# Process nginx.conf.template -> nginx.conf using DOMAIN_NAME
+echo "Generating /etc/nginx/nginx.conf from template..."
+envsubst '$DOMAIN_NAME' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+echo "nginx.conf generated successfully."
 
 # Background process to gracefully reload Nginx every 6 hours
 (
