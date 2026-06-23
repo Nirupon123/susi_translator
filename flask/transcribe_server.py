@@ -22,6 +22,7 @@ import wave
 import io
 import os
 import atexit
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -192,7 +193,10 @@ SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
 #TTS 
 _supertonic_tts = None
 _tts_lock = threading.Lock()
-
+tts_inference_lock = threading.Lock()
+tts_executor = ThreadPoolExecutor(max_workers=1)
+tts_cache = {}  # type: dict[tuple[str, str], str|None]
+latest_tts_requests = {}  # type: dict[str, str]
 def get_tts_engine():
     global _supertonic_tts
     if _supertonic_tts is None:
@@ -234,23 +238,40 @@ def generate_tts_sync(text, target_lang):
         style_name = TTS_VOICE_STYLES.get(target_lang, "F1")
         voice_style = tts_engine.get_voice_style(voice_name=style_name)
         
-        wav, duration = tts_engine.synthesize(
-            text=text, 
-            lang=lang_tag, 
-            voice_style=voice_style,
-            total_steps=8,  # Default medium quality
-            speed=1.0
-        )
+        with tts_inference_lock:
+            wav, duration = tts_engine.synthesize(
+                text=text, 
+                lang=lang_tag, 
+                voice_style=voice_style,
+                total_steps=8,  # Default medium quality
+                speed=1.0
+            )
         
         # Supertonic outputs a numpy array. Convert to 16-bit PCM WAV.
         buf = io.BytesIO()
-        sf.write(buf, wav.squeeze(), 44100, format='WAV', subtype='PCM_16')
+        sample_rate = getattr(tts_engine, 'sample_rate', 44100)
+        sf.write(buf, wav.squeeze(), sample_rate, format='WAV', subtype='PCM_16')
         audio_bytes = buf.getvalue()
         
         return base64.b64encode(audio_bytes).decode('utf-8')
     except Exception as e:
-        logger.error(f"TTS Error: {e}")
+        logger.error(f"TTS Error: {e}", exc_info=True)
         return None
+
+def _async_generate_tts(text, target_lang, cache_key, chunk_id=None):
+    if chunk_id is not None:
+        if latest_tts_requests.get(chunk_id) != text:
+            # A newer request for this chunk is queued. Skip this obsolete one!
+            tts_cache[cache_key] = None
+            return
+
+    try:
+        audio_b64 = generate_tts_sync(text, target_lang)
+        tts_cache[cache_key] = audio_b64
+    except Exception as e:
+        logger.error(f"Async TTS Error: {e}", exc_info=True)
+        tts_cache[cache_key] = None
+
 
 
 # Small helper functions
@@ -1129,6 +1150,7 @@ def translate_stream():
         translated_transcripts = {}
         last_translations = {}
         last_translation_time = 0.0
+        sent_audio = {}
 
         yield f"data: {json.dumps({'status': 'connected'})}\n\n"
 
@@ -1149,45 +1171,60 @@ def translate_stream():
                     cid_int = _chunk_id_int(cid)
                     if cid_int >= last_chunk_id:
                         text = tenant_transcripts[cid]['transcript']
-
                         needs_tx_update = sent_transcripts.get(cid) != text
                         needs_tl_update = target_lang and (translated_transcripts.get(cid) != text)
 
-                        if needs_tx_update or needs_tl_update:
-                            translation = last_translations.get(cid, "")
+                        translation = last_translations.get(cid, "")
 
-                            if needs_tl_update and can_translate:
-                                try:
-                                    lang_config = registry.get_language_config(tenant_id)
-                                    source_lang = lang_config.get('source_lang', 'en')
-                                    new_tl = registry.translate(tenant_id, text, source_lang, target_lang)
-                                    if new_tl:
-                                        translation = new_tl
-                                    last_translations[cid] = translation
-                                    translated_transcripts[cid] = text
-                                    last_translation_time = time.time()
-                                    can_translate = False  # Only 1 translation per loop to spread load
-                                except Exception as e:
-                                    logger.error(f"Stream translation error for {tenant_id}: {e}")
+                        if needs_tl_update and can_translate:
+                            try:
+                                lang_config = registry.get_language_config(tenant_id)
+                                source_lang = lang_config.get('source_lang', 'en')
+                                new_tl = registry.translate(tenant_id, text, source_lang, target_lang)
+                                if new_tl:
+                                    translation = new_tl
+                                last_translations[cid] = translation
+                                translated_transcripts[cid] = text
+                                last_translation_time = time.time()
+                                can_translate = False  # Only 1 translation per loop to spread load
+                            except Exception as e:
+                                logger.error(f"Stream translation error for {tenant_id}: {e}")
 
-                            # Send an event if the transcription changed, or if we just
-                            # successfully translated it to match the current transcription.
-                            if needs_tx_update or (needs_tl_update and translated_transcripts.get(cid) == text):
-                                payload = {
-                                    "chunk_id": cid,
-                                    "transcript": text,
-                                    "translation": translation,
-                                }
-                                
-                                if wants_audio:
-                                    tts_text = translation if target_lang else text
-                                    lang_to_speak = target_lang if target_lang else registry.get_language_config(tenant_id).get('source_lang', 'en')
-                                    tts_b64 = generate_tts_sync(tts_text, lang_to_speak)
-                                    if tts_b64:
-                                        payload["audio_b64"] = tts_b64
+                        is_ready_update = needs_tx_update or (needs_tl_update and translated_transcripts.get(cid) == text)
+                        
+                        tts_text = translation if target_lang else text
+                        needs_audio_update = False
+                        audio_b64 = None
 
-                                events_to_send.append(payload)
-                                sent_transcripts[cid] = text
+                        if wants_audio and tts_text:
+                            lang_to_speak = target_lang if target_lang else registry.get_language_config(tenant_id).get('source_lang', 'en')
+                            cache_key = (lang_to_speak, tts_text)
+                            cached_audio = tts_cache.get(cache_key)
+                            
+                            if cached_audio == 'pending':
+                                pass
+                            elif cached_audio is not None:
+                                audio_b64 = cached_audio
+                                if sent_audio.get(cid) != tts_text:
+                                    needs_audio_update = True
+                            else:
+                                latest_tts_requests[cid] = tts_text
+                                tts_cache[cache_key] = 'pending'
+                                tts_executor.submit(_async_generate_tts, tts_text, lang_to_speak, cache_key, cid)
+
+                        if is_ready_update or needs_audio_update:
+                            payload = {
+                                "chunk_id": cid,
+                                "transcript": text,
+                                "translation": translation,
+                            }
+                            
+                            if needs_audio_update and audio_b64:
+                                payload["audio_b64"] = audio_b64
+                                sent_audio[cid] = tts_text
+
+                            events_to_send.append(payload)
+                            sent_transcripts[cid] = text
 
                 for payload in events_to_send:
                     yield f"data: {json.dumps(payload)}\n\n"
