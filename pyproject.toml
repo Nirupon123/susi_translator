@@ -25,6 +25,7 @@ dependencies = [
     "openai-whisper",
     "pyaudio",
     "pybars3",
+    "pydub",
     "python-dotenv",
     "requests",
     "scipy",

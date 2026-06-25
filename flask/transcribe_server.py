@@ -579,8 +579,15 @@ def _session_logic(success_status: int = 200):
                 )
                 db.session.add(new_room)
                 db.session.commit()
+                logger.info(f"[Session] Room {new_tenant_id} saved to DB for organizer '{email}'")
     except (JWTExtendedException, PyJWTError):
-        pass  
+        pass
+    except Exception as e:
+        logger.error(f"[Session] Failed to save room {new_tenant_id} to DB: {type(e).__name__}: {e}", exc_info=True)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
     logger.info(f"New session for source={source}: tenant_id={new_tenant_id}")
     return {"tenant_id": new_tenant_id, "source": source}, success_status
@@ -916,6 +923,9 @@ def configure_provider():
                 room.stream_type = stream_type
                 room.stream_url = stream_url
                 db.session.commit()
+                logger.info(f"[Configure] Room {tenant_id} saved to DB: configured=True, stream_type={stream_type}, stream_url={stream_url!r}")
+            else:
+                logger.warning(f"[Configure] Room {tenant_id} NOT found in DB — cannot mark as configured!")
 
         configured = []
         if transcription:
@@ -946,8 +956,12 @@ def configure_provider():
                 "--tenant", tenant_id,
                 "--server", server_url,
                 stream_type,
-                "--url", stream_url,
             ]
+            if stream_type == "file":
+                cmd.extend(["--path", stream_url])
+                cmd.append("--realtime")
+            elif stream_type in ("url", "youtube"):
+                cmd.extend(["--url", stream_url])
             # Pass the auth token via environment variable
             # Explicitly construct a minimal environment to avoid leaking
             # sensitive parent vars to the subprocess.
@@ -1098,6 +1112,7 @@ def get_rooms():
             "streamType": r.stream_type,
             "videoUrl": r.stream_url
         })
+    logger.debug(f"[get_rooms] Returning {len(room_data)} rooms for organizer '{email}': {[r['tenant_id'][:8] for r in room_data]}")
     return jsonify(room_data), 200
 
 @app.route('/stop_event/<tenant_id>', methods=['POST'])
