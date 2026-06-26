@@ -4,6 +4,7 @@
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/stream.css') }}?v=11" />
+<script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
 <style>
   /* Inline fallback: zero out main padding directly so layout is locked */
   main { padding: 0 !important; min-height: unset !important; }
@@ -46,6 +47,9 @@
                     <img src="{{ url_for('static', filename='img/microphone.png') }}" alt="Mic" style="width: 80px; height: 80px; object-fit: contain;">
                 </div>
                 <div id="mic-prompt" style="position: absolute; bottom: 20px; font-weight: bold; color: #4f8ef7; background: white; padding: 5px 10px; border-radius: 5px;">Click mic to start</div>
+            </div>
+            <div id="audio-player-container" style="display: none;">
+                <!-- WaveSurfer Audio Player for uploaded file streams -->
             </div>
         </div>
 
@@ -97,6 +101,7 @@
     const TENANT_ID = {{ tenant_id | tojson }};
     const VIDEO_URL = {{ video_url | tojson }};
     const STREAM_TYPE = {{ stream_type | tojson }};
+    const AUDIO_FILE_URL = {{ audio_file_url | tojson }};
 
     // Navigation Fix & Ghost Room Protection
     window.onload = async function() {

@@ -22,6 +22,90 @@ document.addEventListener('DOMContentLoaded', () => {
         ytPlayer.style.display = 'none';
         const micContainer = document.getElementById('mic-container');
         if (micContainer) micContainer.style.display = 'flex';
+    } else if (STREAM_TYPE === 'file' && AUDIO_FILE_URL) {
+        //WaveSurfer Audio Player for uploaded file streams
+        ytPlayer.style.display = 'none';
+        const audioPlayerContainer = document.getElementById('audio-player-container');
+        audioPlayerContainer.style.display = 'flex';
+        audioPlayerContainer.style.flexDirection = 'column';
+        audioPlayerContainer.style.alignItems = 'stretch';
+        audioPlayerContainer.style.justifyContent = 'center';
+        audioPlayerContainer.style.width = '100%';
+        audioPlayerContainer.style.height = '100%';
+        audioPlayerContainer.style.background = '#111827';
+        audioPlayerContainer.style.borderRadius = '8px';
+        audioPlayerContainer.style.padding = '24px';
+        audioPlayerContainer.style.boxSizing = 'border-box';
+
+        audioPlayerContainer.innerHTML = `
+            <div style="display:flex; flex-direction:column; gap:16px; width:100%;">
+                <div style="display:flex; align-items:center; gap:12px; color:#f3f4f6;">
+                    <button id="ws-play-btn" style="width:48px;height:48px;border-radius:50%;background:#1d4ed8;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.2s;">
+                        <svg id="ws-play-icon" width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        <svg id="ws-pause-icon" width="20" height="20" fill="white" viewBox="0 0 24 24" style="display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                    </button>
+                    <div style="flex:1; min-width:0;">
+                        <p style="margin:0;font-size:0.8rem;color:#9ca3af;font-weight:500;">UPLOADED FILE</p>
+                        <p style="margin:0;font-size:1rem;font-weight:600;color:#f3f4f6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Audio File</p>
+                    </div>
+                    <span id="ws-time" style="font-size:0.85rem;color:#9ca3af;font-variant-numeric:tabular-nums;flex-shrink:0;">0:00 / 0:00</span>
+                </div>
+                <div id="ws-waveform" style="width:100%;border-radius:4px;overflow:hidden;"></div>
+            </div>
+        `;
+
+        const ws = WaveSurfer.create({
+            container: '#ws-waveform',
+            waveColor: '#374151',
+            progressColor: '#f97316',
+            cursorColor: '#f97316',
+            barWidth: 3,
+            barGap: 2,
+            barRadius: 2,
+            height: 80,
+            normalize: true,
+            url: AUDIO_FILE_URL,
+        });
+
+        const playBtn = document.getElementById('ws-play-btn');
+        const playIcon = document.getElementById('ws-play-icon');
+        const pauseIcon = document.getElementById('ws-pause-icon');
+        const timeDisplay = document.getElementById('ws-time');
+
+        function formatTime(secs) {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        playBtn.addEventListener('click', () => ws.playPause());
+
+        ws.on('play', () => {
+            playIcon.style.display = 'none';
+            pauseIcon.style.display = 'block';
+            playBtn.style.background = '#1e40af';
+            // Resume SSE, transcripts flow again in sync with audio
+            fileAudioPaused = false;
+            connect();
+        });
+        ws.on('pause', () => {
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
+            playBtn.style.background = '#1d4ed8';
+            // Pause SSE , stop receiving/rendering new chunks while audio is paused
+            fileAudioPaused = true;
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            statusText.innerText = 'Paused';
+            pulseDot.classList.remove('connected');
+        });
+        ws.on('timeupdate', (currentTime) => {
+            const duration = ws.getDuration();
+            timeDisplay.textContent = `${formatTime(currentTime)} / ${formatTime(duration || 0)}`;
+        });
+
     } else if (VIDEO_URL) {
         const ytId = extractYtId(VIDEO_URL);
         const twitchId = extractTwitchId(VIDEO_URL);
@@ -35,10 +119,11 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (vimeoId) {
             ytPlayer.src = `https://player.vimeo.com/video/${vimeoId}?autoplay=1&muted=1`;
         } else {
-            console.error("Invalid Video URL provided");
-            ytPlayer.parentElement.innerHTML = '<div style="padding: 40px; text-align: center; color: #ef4444;">Invalid Video URL. Cannot load video.</div>';
+            console.info("Unrecognised URL — not a known streaming platform.");
+            ytPlayer.style.display = 'none';
         }
     }
+
 
     // SSE Connection — viewer-driven, reconnects when language changes
     const captionsBox = document.getElementById('captions-box');
@@ -52,6 +137,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let eventSource = null;
     let lastChunkId = 0;
+
+    // For file streams: block rendering while WaveSurfer is paused
+    let fileAudioPaused = (STREAM_TYPE === 'file');
     
     // Audio State
     let playAudio = false;
@@ -117,6 +205,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isNaN(chunkInt) && chunkInt > lastChunkId) {
                 lastChunkId = chunkInt;
             }
+
+            // For file streams: drop renders when audio is paused to stay in sync
+            if (fileAudioPaused) return;
 
             // Render transcript + translation blocks
             let block = document.getElementById(`chunk-${data.chunk_id}`);
@@ -211,8 +302,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 1. Initial Connection
-    connect();
+    // Initial Connection
+    // For file streams, we start paused, SSE opens when the user presses Play.
+    if (STREAM_TYPE !== 'file') {
+        connect();
+    }
+
 
     // Reconnect when viewer picks a different language.
     // We keep lastChunkId so they don't re-receive all old chunks.

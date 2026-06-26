@@ -162,9 +162,9 @@ from auth.models import Organizer
 admin.add_view(SecureModelView(Organizer, db, name="Users/Organizers"))
 
 
-#TODO: will be deleted after the merge of migrations PR
-with app.app_context():
-    db.create_all()
+# #TODO: will be deleted after the merge of migrations PR
+# with app.app_context():
+#     db.create_all()
 
 
 # Shared in-memory state
@@ -838,7 +838,28 @@ def upload_file():
         return jsonify({"status": "success", "file_path": filepath}), 200
 
 
+@app.route('/api/v1/audio/<tenant_id>', methods=['GET'])
+@organizer_required
+def serve_audio_file(tenant_id):
+    """
+    Securely serve the uploaded audio file for a room back to the room owner's browser.
+    Only the organizer who owns the room can access it.
+    """
+    _assert_tenant_ownership(tenant_id)
+    from auth.models import Room
+    room = Room.query.filter_by(tenant_id=tenant_id).first()
+    if not room or room.stream_type != 'file' or not room.stream_url:
+        abort(404)
 
+    # Security: confirm the stored path is within the upload folder
+    absolute_path = os.path.abspath(room.stream_url)
+    if os.path.commonpath([UPLOAD_FOLDER, absolute_path]) != UPLOAD_FOLDER:
+        abort(403)
+    if not os.path.exists(absolute_path):
+        abort(404)
+
+    from flask import send_file
+    return send_file(absolute_path)
 
 
 #Provider configuration endpoint
@@ -1511,7 +1532,11 @@ def stream_page(tenant_id: str):
     _assert_tenant_ownership(tenant_id)
     video_url = request.args.get("url", "")
     stream_type = request.args.get("type", "")
-    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url, stream_type=stream_type)
+    # For file uploads, pass a URL the browser can fetch the audio from
+    audio_file_url = ""
+    if stream_type == "file":
+        audio_file_url = url_for("serve_audio_file", tenant_id=tenant_id)
+    return render_template("stream.html", tenant_id=tenant_id, video_url=video_url, stream_type=stream_type, audio_file_url=audio_file_url)
 
 
 if __name__ == '__main__':
