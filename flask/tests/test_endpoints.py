@@ -241,22 +241,24 @@ def test_generate_tts_sync_smoke(mock_get_engine):
 @patch("auth.decorators.verify_jwt_in_request", return_value=None)
 @patch("auth.decorators.get_jwt", return_value={})
 @patch("transcribe_server.tts_executor")
-def test_stream_audio_background_dispatch(mock_executor, mock_jwt, mock_verify, mock_assert, client, ts):
+@patch("transcribe_server.registry.translate", return_value="hola")
+def test_stream_audio_background_dispatch(mock_translate, mock_executor, mock_jwt, mock_verify, mock_assert, client, ts):
     """Verify that translate/stream?audio=true dispatches to the background worker."""
     with ts.transcripts_lock:
         ts.transcriptd["test-audio-tenant"] = {"0": {"transcript": "hello"}}
     
     resp = client.get("/api/v1/translate/stream?tenant_id=test-audio-tenant&audio=true&target_lang=es")
     
+    iterator = iter(resp.response)
     lines = []
-    for line in resp.iter_lines():
-        if line:
-            lines.append(line)
-        if len(lines) >= 2:
+    for _ in range(2):
+        try:
+            lines.append(next(iterator))
+        except StopIteration:
             break
             
     assert mock_executor.submit.called
     args, kwargs = mock_executor.submit.call_args
     # args is (_async_generate_tts, text, lang, cache_key)
-    assert args[1] == "hello" 
+    assert args[1] == "hola" 
     assert args[2] == "es"

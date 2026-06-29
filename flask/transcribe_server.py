@@ -10,7 +10,7 @@ import requests
 import logging
 import base64
 import soundfile as sf
-from supertonic import TTS
+from collections import OrderedDict
 import json
 import queue
 import signal
@@ -195,13 +195,14 @@ _supertonic_tts = None
 _tts_lock = threading.Lock()
 tts_inference_lock = threading.Lock()
 tts_executor = ThreadPoolExecutor(max_workers=1)
-tts_cache = {}  # type: dict[tuple[str, str], str|None]
+tts_cache = OrderedDict()  # type: OrderedDict[tuple[str, str], str|None]
 latest_tts_requests = {}  # type: dict[str, str]
 def get_tts_engine():
     global _supertonic_tts
     if _supertonic_tts is None:
         with _tts_lock:
             if _supertonic_tts is None:
+                from supertonic import TTS
                 _supertonic_tts = TTS(auto_download=True)
     return _supertonic_tts
 
@@ -268,6 +269,8 @@ def _async_generate_tts(text, target_lang, cache_key, chunk_id=None):
     try:
         audio_b64 = generate_tts_sync(text, target_lang)
         tts_cache[cache_key] = audio_b64
+        if len(tts_cache) > 1000:
+            tts_cache.popitem(last=False)
     except Exception as e:
         logger.error(f"Async TTS Error: {e}", exc_info=True)
         tts_cache[cache_key] = None
@@ -1140,7 +1143,9 @@ def translate_stream():
     _assert_tenant_ownership(tenant_id)
 
     target_lang = request.args.get('target_lang')
-    if not target_lang:
+    if target_lang == 'original':
+        target_lang = None
+    elif not target_lang:
         target_lang = registry.get_language_config(tenant_id).get('target_lang')
     last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
     wants_audio = request.args.get('audio', 'false').lower() == 'true'
@@ -1197,6 +1202,10 @@ def translate_stream():
                         audio_b64 = None
 
                         if wants_audio and tts_text:
+                            # Truncate extremely long texts to prevent CPU DoS during synthesis
+                            if len(tts_text) > 300:
+                                tts_text = tts_text[:297] + "..."
+                            
                             lang_to_speak = target_lang if target_lang else registry.get_language_config(tenant_id).get('source_lang', 'en')
                             cache_key = (lang_to_speak, tts_text)
                             cached_audio = tts_cache.get(cache_key)
@@ -1210,6 +1219,8 @@ def translate_stream():
                             else:
                                 latest_tts_requests[cid] = tts_text
                                 tts_cache[cache_key] = 'pending'
+                                if len(tts_cache) > 1000:
+                                    tts_cache.popitem(last=False)
                                 tts_executor.submit(_async_generate_tts, tts_text, lang_to_speak, cache_key, cid)
 
                         if is_ready_update or needs_audio_update:
