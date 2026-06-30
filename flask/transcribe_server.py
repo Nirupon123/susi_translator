@@ -892,7 +892,6 @@ def configure_provider():
         organizer = None
         if email:
             organizer = Organizer.query.filter_by(email=email).first()
-
         stream_url = data.get("stream_url")
         stream_type = data.get("stream_type", "youtube")
 
