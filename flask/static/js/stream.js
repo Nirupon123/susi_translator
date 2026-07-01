@@ -278,6 +278,13 @@ document.addEventListener('DOMContentLoaded', () => {
             statusText.innerText = 'Connection Lost - Reconnecting...';
             pulseDot.classList.remove('connected');
             pulseDot.classList.add('error');
+            
+            // Close the current event source to prevent auto-reconnect with stale URL
+            eventSource.close();
+            eventSource = null;
+            
+            // Manually reconnect after a delay to use the updated lastChunkId
+            setTimeout(connect, 3000);
         };
     }
     

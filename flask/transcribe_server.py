@@ -10,6 +10,7 @@ import requests
 import logging
 import base64
 import soundfile as sf
+import collections
 from collections import OrderedDict
 import json
 import queue
@@ -426,16 +427,8 @@ def _next_payload():
     Pull the next audio payload from audio stack, dropping any superseded
     duplicates so we only transcribe the latest version of each chunk
     """
-    # 192_000 raw bytes = 96_000 int16 samples = 6 seconds at 16kHz
-    # Base64 inflates by 4/3, so we set the threshold to 256_000 encoded characters.
-    _MAX_SKIP_BYTES = 256_000
-
     tenant_id, chunk_id, audiob64 = audio_stack.get()
     while True:
-        # If the current payload is already large, just process it now.
-        current_size = len(audiob64) if audiob64 else 0
-        if current_size >= _MAX_SKIP_BYTES:
-            return tenant_id, chunk_id, audiob64
 
         with audio_stack.mutex:
             has_newer = any(
@@ -1207,6 +1200,7 @@ def translate_stream():
         last_translations = {}
         last_translation_time = 0.0
         sent_audio = {}
+        last_keepalive = time.time()
 
         yield f"data: {json.dumps({'status': 'connected'})}\n\n"
 
@@ -1233,6 +1227,7 @@ def translate_stream():
                         translation = last_translations.get(cid, "")
 
                         if needs_tl_update and can_translate:
+                            can_translate = False  # Only 1 translation per loop to spread load
                             try:
                                 lang_config = registry.get_language_config(tenant_id)
                                 source_lang = lang_config.get('source_lang', 'en')
@@ -1242,7 +1237,6 @@ def translate_stream():
                                 last_translations[cid] = translation
                                 translated_transcripts[cid] = text
                                 last_translation_time = time.time()
-                                can_translate = False  # Only 1 translation per loop to spread load
                             except Exception as e:
                                 logger.error(f"Stream translation error for {tenant_id}: {e}")
 
@@ -1288,6 +1282,14 @@ def translate_stream():
 
                 for payload in events_to_send:
                     yield f"data: {json.dumps(payload)}\n\n"
+
+                now_time = time.time()
+                if not events_to_send:
+                    if now_time - last_keepalive > 15:
+                        yield ": heartbeat\n\n"
+                        last_keepalive = now_time
+                else:
+                    last_keepalive = now_time
 
                 time.sleep(0.2)
         except GeneratorExit:
@@ -1341,6 +1343,12 @@ def stop_event(tenant_id):
 
     with transcripts_lock:
         transcriptd.pop(tenant_id, None)
+
+    # Instantly purge any pending chunks for this tenant from the queue
+    with audio_stack.mutex:
+        audio_stack.queue = collections.deque(
+            [item for item in audio_stack.queue if item[0] != tenant_id]
+        )
 
     try:
         from auth.models import Room, db
