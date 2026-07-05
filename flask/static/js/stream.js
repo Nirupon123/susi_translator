@@ -114,8 +114,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const ytId = extractYtId(VIDEO_URL);
         const twitchId = extractTwitchId(VIDEO_URL);
         const vimeoId = extractVimeoId(VIDEO_URL);
+        const isHls = VIDEO_URL.split('?')[0].toLowerCase().endsWith('.m3u8') || VIDEO_URL.split('?')[0].toLowerCase().endsWith('.m3u');
         
-        if (ytId) {
+        if (isHls) {
+            ytPlayer.style.display = 'none';
+            const hlsPlayer = document.getElementById('hls-player');
+            hlsPlayer.style.display = 'block';
+            
+            if (Hls.isSupported()) {
+                const hls = new Hls();
+                hls.loadSource(VIDEO_URL);
+                hls.attachMedia(hlsPlayer);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    hlsPlayer.play().catch(e => console.log("Auto-play prevented", e));
+                });
+            } else if (hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari)
+                hlsPlayer.src = VIDEO_URL;
+                hlsPlayer.addEventListener('loadedmetadata', function() {
+                    hlsPlayer.play().catch(e => console.log("Auto-play prevented", e));
+                });
+            }
+        } else if (ytId) {
             ytPlayer.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&mute=1`;
         } else if (twitchId) {
             const currentHost = window.location.hostname;

@@ -899,13 +899,20 @@ def configure_provider():
         stream_url = data.get("stream_url")
         stream_type = data.get("stream_type", "platform")
 
+        if stream_url and stream_type == "platform":
+            base_url = stream_url.split('?')[0].lower()
+            if base_url.endswith('.m3u8') or base_url.endswith('.m3u'):
+                stream_type = "url"
+
         # Validation phase
         if stream_url:
             if stream_type == "platform":
                 PlatformSource._validate_url(stream_url)
             elif stream_type == "url":
-                if not organizer or not organizer.is_admin:
-                    return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs."}), 403
+                base_url = stream_url.split('?')[0].lower()
+                is_hls = base_url.endswith('.m3u8') or base_url.endswith('.m3u')
+                if not is_hls and (not organizer or not organizer.is_admin):
+                    return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs (unless it is an HLS .m3u8 stream)."}), 403
                 URLSource._validate_url(stream_url)
             elif stream_type == "file":
                 if not os.path.exists(stream_url):

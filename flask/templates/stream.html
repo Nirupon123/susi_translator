@@ -5,6 +5,7 @@
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/stream.css') }}?v=11" />
 <script src="https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <style>
   /* Inline fallback: zero out main padding directly so layout is locked */
   main { padding: 0 !important; min-height: unset !important; }
@@ -40,6 +41,7 @@
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                 allowfullscreen>
             </iframe>
+            <video id="hls-player" controls autoplay muted style="display: none; width: 100%; height: 100%; object-fit: contain;"></video>
             <div id="mic-container" style="display: none;">
                 <div class="mic-wave" id="mic-wave-1"></div>
                 <div class="mic-wave" id="mic-wave-2"></div>

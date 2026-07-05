@@ -130,8 +130,8 @@ def test_url_source_bad_stream_url_returns_400_without_spawning(
 
 @pytest.mark.parametrize("good_url", [
     "https://example.com/stream.mp3",
-    "http://radio.example.org:8080/live.m3u8",
-    "https://cdn.example.com/hls/playlist.m3u8",
+    "http://example.com:8080/live.m3u8",
+    "https://example.com/hls/playlist.m3u8",
 ])
 def test_url_source_good_stream_url_spawns_grabber(client, good_url):
     """Valid HTTP/HTTPS stream URL for source_type='url' must reach Popen."""

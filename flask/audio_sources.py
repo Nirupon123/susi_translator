@@ -195,7 +195,11 @@ class URLSource(AudioSource):
     def _validate_url(url: str) -> str:
         """
         Validate that the URL is a safe HTTP/HTTPS network URL before passing it to ffmpeg.
+        Also resolves the hostname to ensure it does not point to a private/internal IP (SSRF protection).
         """
+        import socket
+        import ipaddress
+
         if not isinstance(url, str) or not url:
             raise ValueError("URLSource: url must be a non-empty string")
         # Reject anything that could be parsed as an option flag by ffmpeg
@@ -207,8 +211,18 @@ class URLSource(AudioSource):
                 f"URLSource: unsupported URL scheme {parsed.scheme!r}; "
                 f"allowed schemes are {sorted(_ALLOWED_URL_SCHEMES)}"
             )
-        if not parsed.netloc:
+        if not parsed.hostname:
             raise ValueError("URLSource: url must include a host")
+            
+        # SSRF Protection: Resolve the hostname and ensure it's not a private/internal IP
+        try:
+            ip = socket.gethostbyname(parsed.hostname)
+            ip_obj = ipaddress.ip_address(ip)
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                raise ValueError(f"URLSource: URL resolves to a restricted internal IP address ({ip}).")
+        except socket.gaierror:
+            raise ValueError(f"URLSource: Failed to resolve hostname '{parsed.hostname}'.")
+            
         return url
 
     def start(self) -> None:
@@ -267,14 +281,7 @@ class URLSource(AudioSource):
 
 class StdinSource(AudioSource):
     """
-    Read raw 16 kHz, 16-bit mono PCM audio from stdin.
-
-    Example:
-        ffmpeg -i input.flac -f s16le -ac 1 -ar 16000 - | \
-            python audio_grabber.py stdin --server http://localhost:5040
-
-    The input must already be in the required PCM format; no decoding or
-    resampling is performed.
+    Read raw 16 kHz, 16-bit mono PCM audio from stdin
     """
 
     def __init__(self) -> None:
@@ -304,11 +311,7 @@ class StdinSource(AudioSource):
 class PlatformSource(AudioSource):
     """
     Decode a platform (YouTube/Twitch/Vimeo) URL by getting the URL from ``yt-dlp`` into ``ffmpeg``.
-    by chaining two subprocesses::
-
-        yt-dlp -f <fmt> -o - <url>  |  ffmpeg -i pipe:0 ... -f s16le -
-
-    See the README for requirements (yt-dlp + ffmpeg on PATH) and cookie-based auth.
+    by chaining two subprocesses
     """
 
     _ALLOWED_HOSTS: frozenset[str] = frozenset({
