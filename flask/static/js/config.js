@@ -7,7 +7,7 @@ function onStreamTypeChange() {
     const fileUploadGroup = document.getElementById('file-upload-group');
     const audioUpload = document.getElementById('audio-upload');
     
-    if (streamType === 'youtube') {
+    if (streamType === 'platform') {
         streamInputGroup.classList.remove('hidden');
         if(fileUploadGroup) fileUploadGroup.style.display = 'none';
         if(audioUpload) audioUpload.required = false;
@@ -74,7 +74,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const rooms = await res.json();
                 const room = rooms.find(r => r.tenant_id === TENANT_ID);
                 if (room && room.configured) {
-                    window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(room.videoUrl || '')}&type=${room.streamType || 'youtube'}`);
+                    window.location.replace(`/stream/${TENANT_ID}?url=${encodeURIComponent(room.videoUrl || '')}&type=${room.streamType || 'platform'}`);
                     return;
                 }
             }

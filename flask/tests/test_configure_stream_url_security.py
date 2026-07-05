@@ -35,7 +35,7 @@ def mock_registry(ts):
         yield
 
 
-# YouTube source(bad URLs must be rejected BEFORE Popen)
+# Platform source(bad URLs must be rejected BEFORE Popen)
 
 @pytest.mark.parametrize("bad_url, expected_fragment", [
     ("file:///etc/passwd",              "unsupported URL scheme"),
@@ -44,15 +44,15 @@ def mock_registry(ts):
     ("pipe:0",                          "unsupported URL scheme"),
     ("-i evil_flag",                    "must not start with '-'"),
     ("http://",                         "host"),
-    ("https://evil.example/watch?v=x",  "not a recognised YouTube domain"),
-    ("https://notyoutube.com/live/abc", "not a recognised YouTube domain"),
+    ("https://evil.example/watch?v=x",  "not a recognised platform domain"),
+    ("https://notyoutube.com/live/abc", "not a recognised platform domain"),
     # Subdomain lookalike: youtube.com is a subdomain of attacker root.
-    ("https://youtube.com.evil.example/watch?v=x", "not a recognised YouTube domain"),
+    ("https://youtube.com.evil.example/watch?v=x", "not a recognised platform domain"),
 ])
-def test_youtube_bad_stream_url_returns_400_without_spawning(
+def test_platform_bad_stream_url_returns_400_without_spawning(
     client, bad_url, expected_fragment
 ):
-    """Bad YouTube stream_url must fail at the API boundary (HTTP 400) without
+    """Bad platform stream_url must fail at the API boundary (HTTP 400) without
     ever calling subprocess.Popen."""
 
     with patch("transcribe_server.subprocess.Popen") as mock_popen:
@@ -69,7 +69,7 @@ def test_youtube_bad_stream_url_returns_400_without_spawning(
     mock_popen.assert_not_called(), "Popen must NOT be called for invalid URLs"
 
 
-# YouTube source(good URLs must proceed to Popen)
+# Platform source(good URLs must proceed to Popen)
 
 @pytest.mark.parametrize("good_url", [
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -79,8 +79,8 @@ def test_youtube_bad_stream_url_returns_400_without_spawning(
     "https://www.twitch.tv/somestream",
     "https://vimeo.com/123456789",
 ])
-def test_youtube_good_stream_url_spawns_grabber(client, good_url):
-    """Valid YouTube/allowlisted stream_url must reach subprocess.Popen exactly once."""
+def test_platform_good_stream_url_spawns_grabber(client, good_url):
+    """Valid platform/allowlisted stream_url must reach subprocess.Popen exactly once."""
     mock_proc = MagicMock()
     mock_proc.pid = 12345
     with patch("transcribe_server.subprocess.Popen", return_value=mock_proc) as mock_popen:
@@ -169,12 +169,12 @@ def test_unknown_source_type_returns_400_without_spawning(client):
     mock_popen.assert_not_called()
 
 
-def test_default_source_type_is_youtube(client):
-    """Omitting source_type must default to 'youtube' (backward compatibility)."""
+def test_default_source_type_is_platform(client):
+    """Omitting source_type must default to 'platform' (backward compatibility)."""
     mock_proc = MagicMock()
     mock_proc.pid = 12345
     with patch("transcribe_server.subprocess.Popen", return_value=mock_proc) as mock_popen:
-        # Valid YouTube URL, no source_type field — must succeed with the YouTube validator.
+        # Valid YouTube URL, no source_type field — must succeed with the platform validator.
         resp = client.post(
             _CONFIGURE_URL,
             json=_payload(stream_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
@@ -182,14 +182,14 @@ def test_default_source_type_is_youtube(client):
 
     assert resp.status_code == 200
     mock_popen.assert_called_once()
-    # The subcommand passed to audio_grabber must be 'youtube'.
+    # The subcommand passed to audio_grabber must be 'platform'.
     cmd_args = mock_popen.call_args[0][0]
-    assert "youtube" in cmd_args
+    assert "platform" in cmd_args
 
 
-def test_default_source_type_rejects_non_youtube_host(client):
-    """Without source_type, a plain HTTPS URL to a non-YouTube host must be rejected
-    (the youtube validator is the default)."""
+def test_default_source_type_rejects_non_platform_host(client):
+    """Without source_type, a plain HTTPS URL to a non-platform host must be rejected
+    (the platform validator is the default)."""
     with patch("transcribe_server.subprocess.Popen") as mock_popen:
         resp = client.post(
             _CONFIGURE_URL,

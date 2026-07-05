@@ -2,7 +2,7 @@
 SUSI Translator audio grabber
 
 Reads audio from one of five sources (microphone, file, URL, stdin,
-YouTube), buffers up to ~10 seconds while resetting on silence, and POSTs
+YouTube, Twitch, Vimeo, etc.), buffers up to ~10 seconds while resetting on silence, and POSTs
 base64-encoded chunks to the transcription server's ``/transcripts``
 endpoint
 """
@@ -37,7 +37,7 @@ from audio_sources import (
     MicrophoneSource,
     StdinSource,
     URLSource,
-    YouTubeSource,
+    PlatformSource,
 )
 
 
@@ -47,7 +47,7 @@ BUFFER_SIZE: int = 2 * 10 * RATE  # bytes -> 10 seconds of audio
 SILENCE_THRESHOLD: int = 500
 
 DEFAULT_SERVER: str = "http://localhost:5040"
-VALID_SOURCES = ("mic", "file", "url", "stdin", "youtube")
+VALID_SOURCES = ("mic", "file", "url", "stdin", "platform")
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +319,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="audio_grabber",
         description=(
             "Capture audio from various sources (microphone, file, URL, "
-            "stdin, YouTube) and stream it to the SUSI transcription server."
+            "stdin, YouTube/Vimeo/Twitch) and stream it to the SUSI transcription server."
         ),
     )
     parser.add_argument(
@@ -349,7 +349,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="source",
         required=True,
-        metavar="{mic,file,url,stdin,youtube}",
+        metavar="{mic,file,url,stdin,platform}",
         help="Audio source to use.",
     )
 
@@ -392,8 +392,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_yt = sub.add_parser(
-        "youtube",
-        help="Decode a YouTube (Live or VOD) URL via yt-dlp + ffmpeg.",
+        "platform",
+        help="Decode a platform (YouTube/Twitch/Vimeo) Live or VOD URL via yt-dlp + ffmpeg.",
     )
     p_yt.add_argument(
         "--url",
@@ -441,8 +441,8 @@ def _build_source(args: argparse.Namespace) -> AudioSource:
         return URLSource(url=args.url)
     if args.source == "stdin":
         return StdinSource()
-    if args.source == "youtube":
-        return YouTubeSource(
+    if args.source == "platform":
+        return PlatformSource(
             url=args.url,
             format_selector=args.format,
             cookies_path=args.cookies_path,

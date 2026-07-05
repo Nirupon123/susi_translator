@@ -34,7 +34,7 @@ from providers.registry import ProviderRegistry
 import providers.plugins 
 from dotenv import load_dotenv
 
-from audio_sources import URLSource, YouTubeSource
+from audio_sources import URLSource, PlatformSource
 
 
 # Load environment variables from .env file
@@ -183,7 +183,7 @@ grabber_lock = threading.Lock()
 
 # FIFO queue of pending audio chunks awaiting transcription.
 audio_stack = queue.Queue()
-VALID_SOURCES = {"mic", "file", "url", "stdin", "youtube", "unspecified"}
+VALID_SOURCES = {"mic", "file", "url", "stdin", "platform", "unspecified"}
 latest_session_by_source = {s: None for s in VALID_SOURCES}
 session_lock = threading.Lock()
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '7200'))
@@ -473,15 +473,15 @@ configure_input_model = api.model('ConfigureRequest', {
         required=False,
         description=(
             'Optional stream URL. Validated in the parent process before spawning audio_grabber.py. '
-            'Rejected with HTTP 400 for invalid scheme, missing host, or (for youtube) non-allowlisted domain.'
+            'Rejected with HTTP 400 for invalid scheme, missing host, or (for platform) non-allowlisted domain.'
         ),
     ),
     'stream_type': fields.String(
         required=False,
-        enum=['youtube', 'url', 'file', 'mic'],
+        enum=['platform', 'url', 'file', 'mic'],
+        default='platform',
         description=(
-            'Audio stream type for stream_url. '
-            '"youtube" (default) enforces a recognised YouTube/Twitch/Vimeo host allowlist. '
+            '"platform" (default) enforces a recognised YouTube/Twitch/Vimeo host allowlist. '
             '"url" allows any HTTP/HTTPS URL with a non-empty host.'
         ),
     ),
@@ -520,7 +520,7 @@ size_response_model = api.model('SizeResponse', {
 session_input_model = api.model('SessionRequest', {
     'source': fields.String(
         required=True,
-        description='Input source name; one of: mic, file, url, stdin, youtube, unspecified',
+        description='Input source name; one of: mic, file, url, stdin, platform, unspecified',
         enum=sorted(VALID_SOURCES),
     ),
 })
@@ -534,10 +534,10 @@ session_response_model = api.model('SessionResponse', {
 # Shared Swagger parameter blocks
 _TENANT_PARAM = {'description': 'Tenant ID', 'default': '0000'}
 _SOURCE_PARAM = {
-    'description': 'Resolve to the latest session for a source (mic|file|url|stdin|youtube|unspecified). '
-                   'Ignored if tenant_id is given. Unknown values return HTTP 400.',
-    'type': 'string',
-    'enum': ['mic', 'file', 'url', 'stdin', 'youtube', 'unspecified'],
+    'description': 'Resolve to the latest session for a source (mic|file|url|stdin|platform|unspecified). '
+                   'Falls back to creating a new one if not found.',
+    'required': False,
+    'enum': ['mic', 'file', 'url', 'stdin', 'platform', 'unspecified'],
 }
 _SENTENCES_PARAM = {'description': 'Merge and split transcripts into sentences', 'type': 'boolean', 'default': False}
 _FROM_PARAM = {'description': 'Starting chunk ID', 'type': 'string', 'default': '0'}
@@ -897,12 +897,12 @@ def configure_provider():
         if email:
             organizer = Organizer.query.filter_by(email=email).first()
         stream_url = data.get("stream_url")
-        stream_type = data.get("stream_type", "youtube")
+        stream_type = data.get("stream_type", "platform")
 
         # Validation phase
         if stream_url:
-            if stream_type == "youtube":
-                YouTubeSource._validate_url(stream_url)
+            if stream_type == "platform":
+                PlatformSource._validate_url(stream_url)
             elif stream_type == "url":
                 if not organizer or not organizer.is_admin:
                     return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs."}), 403
@@ -920,7 +920,7 @@ def configure_provider():
                     "status": "error",
                     "message": (
                         f"Unknown stream_type {stream_type!r}. "
-                        "Must be 'youtube', 'url', or 'file'."
+                        "Must be 'platform', 'url', or 'file'."
                     ),
                 }), 400
 
@@ -971,7 +971,7 @@ def configure_provider():
             if stream_type == "file":
                 cmd.extend(["--path", stream_url])
                 cmd.append("--realtime")
-            elif stream_type in ("url", "youtube"):
+            elif stream_type in ("url", "platform"):
                 cmd.extend(["--url", stream_url])
             # Pass the auth token via environment variable
             # Explicitly construct a minimal environment to avoid leaking
@@ -980,13 +980,13 @@ def configure_provider():
             grabber_env = {k: os.environ[k] for k in safe_env_keys if k in os.environ}
             grabber_env["GRABBER_AUTH_TOKEN"] = internal_token
 
-            # Only applicable for the youtube source.
-            if stream_type == "youtube":
+            # Only applicable for the platform source.
+            if stream_type == "platform":
                 cookies_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), "instance", "youtubecookies.txt"
                 )
                 if os.path.exists(cookies_path):
-                    logger.info(f"Using YouTube cookies file at {cookies_path}")
+                    logger.info(f"Using platform cookies file at {cookies_path}")
                     cmd.extend(["--cookies", cookies_path])
 
             # Spawn BEFORE committing to DB so a spawn failure doesn't leave

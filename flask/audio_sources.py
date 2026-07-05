@@ -1,21 +1,5 @@
 """
-Audio source abstractions for the SUSI Translator audio grabber.
-
-This module defines an ``AudioSource`` abstract base class plus five concrete
-implementations:
-
-    - ``MicrophoneSource`` : live capture from a system microphone (PyAudio).
-    - ``FileSource``       : decode a local audio file (pydub; requires ffmpeg).
-    - ``URLSource``        : decode a remote HTTP(S) audio stream (ffmpeg).
-    - ``StdinSource``      : read raw 16-bit / 16 kHz / mono PCM from stdin.
-    - ``YouTubeSource``    : decode a YouTube (Live or VOD) URL by piping
-                             ``yt-dlp``'s stdout straight into ``ffmpeg``.
-
-All sources MUST yield 16 kHz, 16-bit signed little-endian, mono PCM bytes.
-
-Each source's ``read_chunk()`` yields ~1 second of audio per iteration
-(``CHUNK_BYTES`` bytes) so the orchestrator can apply uniform silence
-detection and buffering.
+Audio source abstractions for the SUSI Translator audio grabber
 """
 
 from __future__ import annotations
@@ -45,30 +29,7 @@ def _read_up_to(stream, n: int) -> bytes:
 
 class AudioSource(ABC):
     """
-    Abstract base class for an audio source.
-
-    Output format (REQUIRED for every implementation)
-    -------------------------------------------------
-    All concrete sources MUST emit raw PCM with this exact format:
-
-        sample rate    : 16 000 Hz
-        sample width   : 2 bytes (16-bit signed little-endian)
-        channels       : 1 (mono)
-
-    Lifecycle
-    ---------
-    - ``start()`` opens the underlying resource (mic, file, network, ...).
-    - ``read_chunk()`` is a generator yielding ~1 second of PCM bytes per
-      iteration. It terminates when the source is exhausted or ``stop()``
-      has been called.
-    - ``stop()`` releases resources. It MUST be safe to call even if
-      ``start()`` was never called, and safe to call multiple times.
-
-    Conventions
-    -----------
-    1 chunk == ``SAMPLE_RATE`` samples == ``SAMPLE_RATE * SAMPLE_WIDTH``
-    bytes. Implementations may yield a final partial chunk if the source
-    ends mid-second.
+    Abstract base class for an audio source
     """
 
     SAMPLE_RATE: int = 16000
@@ -97,14 +58,7 @@ class AudioSource(ABC):
 
 class MicrophoneSource(AudioSource):
     """
-    Capture live audio from a microphone via PyAudio.
-
-    System requirements
-    -------------------
-    - PyAudio installed (``pip install pyaudio``).
-    - A working input device.
-
-    Yields 1-second chunks of 16 kHz / 16-bit / mono PCM bytes. 
+    Capture live audio from a microphone via PyAudio
     """
 
     def __init__(self, input_device_index: Optional[int] = None) -> None:
@@ -178,25 +132,7 @@ class MicrophoneSource(AudioSource):
 
 class FileSource(AudioSource):
     """
-    Read audio from a local file (any format pydub/ffmpeg can decode).
-
-    System requirements
-    -------------------
-    - The ``pydub`` Python package (``pip install pydub``).
-    - The ``ffmpeg`` binary on PATH (pydub shells out to it for any
-      format other than WAV).
-
-    The file is decoded on start() and stored in memory. read_chunk()
-    returns 1-second PCM slices.
-
-    Args
-    ----
-    path
-        Path to the audio file.
-    realtime
-        If True, throttle yields so playback runs at wall-clock speed
-        (useful to simulate a live microphone for testing). If False,
-        yields as fast as the consumer reads.
+    Read audio from a local file
     """
 
     def __init__(self, path: str, realtime: bool = False) -> None:
@@ -365,10 +301,10 @@ class StdinSource(AudioSource):
         self._running = False
         self._stream = None
 
-class YouTubeSource(AudioSource):
+class PlatformSource(AudioSource):
     """
-    Decode a YouTube (Live or VOD) URL into the standard 16 kHz / 16-bit /
-    mono PCM stream by chaining two subprocesses::
+    Decode a platform (YouTube/Twitch/Vimeo) URL by getting the URL from ``yt-dlp`` into ``ffmpeg``.
+    by chaining two subprocesses::
 
         yt-dlp -f <fmt> -o - <url>  |  ffmpeg -i pipe:0 ... -f s16le -
 
@@ -400,7 +336,7 @@ class YouTubeSource(AudioSource):
         # yt-dlp silently honours only one, so reject both up front.
         if cookies_path and cookies_from_browser:
             raise ValueError(
-                "YouTubeSource: pass at most one of cookies_path or "
+                "PlatformSource: pass at most one of cookies_path or "
                 "cookies_from_browser, not both"
             )
         self._watch_url: str = self._validate_url(url)
@@ -417,21 +353,21 @@ class YouTubeSource(AudioSource):
         """Reject bad input before any subprocess: must be an http(s) URL
         with a recognised YouTube host and no leading ``-``."""
         if not isinstance(url, str) or not url:
-            raise ValueError("YouTubeSource: url must be a non-empty string")
+            raise ValueError("PlatformSource: url must be a non-empty string")
         if url.startswith("-"):
-            raise ValueError("YouTubeSource: url must not start with '-'")
+            raise ValueError("PlatformSource: url must not start with '-'")
         parsed = urlparse(url)
         if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
             raise ValueError(
-                f"YouTubeSource: unsupported URL scheme {parsed.scheme!r}; "
+                f"PlatformSource: unsupported URL scheme {parsed.scheme!r}; "
                 f"allowed schemes are {sorted(_ALLOWED_URL_SCHEMES)}"
             )
         if not parsed.netloc:
-            raise ValueError("YouTubeSource: url must include a host")
+            raise ValueError("PlatformSource: url must include a host")
         host = (parsed.hostname or "").lower()
         if host not in cls._ALLOWED_HOSTS:
             raise ValueError(
-                f"YouTubeSource: host {host!r} is not a recognised YouTube "
+                f"PlatformSource: host {host!r} is not a recognised platform "
                 f"domain. Allowed hosts: {sorted(cls._ALLOWED_HOSTS)}"
             )
         return url

@@ -12,7 +12,7 @@ A real-time speech-to-text (transcription) HTTP API built with Flask + flask-res
 │ grabber.py  │ ───────────────> │  (Flask + flask-restx)   │
 │ (mic/file/  │                  │                          │
 │  url/stdin  │                  │  ┌────────────────────┐  │
-│  /youtube)  │                  │  │ audio_stack queue  │  │
+│  /platform) │                  │  │ audio_stack queue  │  │
 └─────────────┘                  │  └─────────┬──────────┘  │
                                  │            ▼             │
                                  │  ┌────────────────────┐  │      Whisper
@@ -33,7 +33,7 @@ A real-time speech-to-text (transcription) HTTP API built with Flask + flask-res
 
 **1. Producer side (`audio_grabber.py` / `audio_sources.py`)**
 
-Grabs ~1s frames of 16 kHz / 16-bit / mono PCM from a mic, file, URL, stdin, or YouTube. Accumulates up to ~10s buffers (resets on silence) and POSTs each as base64 to `/transcripts`.
+Grabs ~1s frames of 16 kHz / 16-bit / mono PCM from a mic, file, URL, stdin, or platform (YouTube/Vimeo/Twitch). Accumulates up to ~10s buffers (resets on silence) and POSTs each as base64 to `/transcripts`.
 
 **2. Server side (`transcribe_server.py`)**
 
@@ -46,7 +46,7 @@ Grabs ~1s frames of 16 kHz / 16-bit / mono PCM from a mic, file, URL, stdin, or 
 ## Key Design Pieces
 
 **Sessions and source aliases.**
-Instead of forcing clients to track UUIDs, `POST /session?source=mic|file|url|stdin|youtube` mints a tenant UUID and registers it as "the latest session for that source." Read endpoints accept `?source=mic`, which resolves to that current tenant ID. Sessions expire after `SESSION_TTL_SECONDS` (default 7200s).
+Instead of forcing clients to track UUIDs, `POST /session?source=mic|file|url|stdin|platform` mints a tenant UUID and registers it as "the latest session for that source." Read endpoints accept `?source=mic`, which resolves to that current tenant ID. Sessions expire after `SESSION_TTL_SECONDS` (default 7200s).
 
 **Pluggable Whisper backend.**
 `WHISPER_SERVER_USE=true` uses an external whisper.cpp HTTP server (no torch/whisper import — keeps the module light); otherwise it lazily imports torch + openai-whisper and loads two local models (`WHISPER_MODEL_FAST`, `WHISPER_MODEL_SMART`).
@@ -77,7 +77,7 @@ All endpoints are available under `/swagger`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/session` | Mint a tenant UUID for a source (`mic`/`file`/`url`/`stdin`/`youtube`) — returns `201 Created` |
+| `POST` | `/session` | Mint a tenant UUID for a source (`mic`/`file`/`url`/`stdin`/`platform`) — returns `201 Created` |
 | `POST` | `/transcripts` | Submit a base64 audio chunk for async processing — returns `202 Accepted` |
 | `GET` | `/transcripts` | All transcripts in `[from, until]` |
 | `GET` | `/transcripts/count` | Count of transcripts in `[from, until]` |
@@ -111,7 +111,7 @@ Swagger and log a deprecation warning. Migrate to the REST paths above.
 
 ## Other Files in `flask/`
 
-- **`audio_grabber.py`** — CLI client orchestrator (subcommands `mic`, `file`, `url`, `stdin`, `youtube`).
+- **`audio_grabber.py`** — CLI client orchestrator (subcommands `mic`, `file`, `url`, `stdin`, `platform`).
 - **`audio_sources.py`** — `AudioSource` ABC + four concrete implementations; `URLSource` has explicit security validation (rejects `file://`, `concat:`, leading `-` to block ffmpeg arg injection).
 - **`transcribe_listener.html`, `transcribe_evaluation.html`, `audio_grabber.html`** — browser UIs that hit the same API.
 - **`tests/`** — pytest suite (`conftest.py` pins `WHISPER_SERVER_USE=true` so tests don't download multi-hundred-MB models).
