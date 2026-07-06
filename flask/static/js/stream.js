@@ -95,6 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Pause stream, stop receiving/rendering new chunks while audio is paused
             fileAudioPaused = true;
             if (wsSocket) {
+                intentionalClose = true;  // tell onclose not to reconnect via SSE
                 try { wsSocket.close(); } catch (_) {}
                 wsSocket = null;
             }
@@ -163,6 +164,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let wsSocket = null;       // active WebSocket connection (primary)
     let usingWebSocket = false;
     let lastChunkId = 0;
+    // Set to true just before we intentionally close the WS (e.g. on pause)
+    // so onclose knows not to trigger the SSE fallback reconnect.
+    let intentionalClose = false;
 
     // For file streams: block rendering while WaveSurfer is paused
     let fileAudioPaused = (STREAM_TYPE === 'file');
@@ -217,10 +221,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Track the highest chunk received for reconnect continuity
-        const chunkInt = parseInt(data.chunk_id, 10);
-        if (!isNaN(chunkInt) && chunkInt > lastChunkId) {
-            lastChunkId = chunkInt;
+        // Track the highest chunk received for reconnect continuity.
+        // Only advance while NOT paused — paused chunks must not shift the
+        // cursor forward or they will be skipped permanently on resume.
+        if (!fileAudioPaused) {
+            const chunkInt = parseInt(data.chunk_id, 10);
+            if (!isNaN(chunkInt) && chunkInt > lastChunkId) {
+                lastChunkId = chunkInt;
+            }
         }
 
         // For file streams: drop renders when audio is paused to stay in sync
@@ -376,6 +384,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         currentWs.onclose = (event) => {
             if (wsSocket !== currentWs) return;
+
+            // Pause handler intentionally closed this socket — do not reconnect.
+            if (intentionalClose) {
+                intentionalClose = false;
+                wsSocket = null;
+                return;
+            }
 
             if (!wsConnected) {
                 // The connection was never established — fall back to SSE immediately

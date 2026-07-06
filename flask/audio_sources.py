@@ -4,18 +4,92 @@ Audio source abstractions for the SUSI Translator audio grabber
 
 from __future__ import annotations
 
+import ipaddress
+import re
+import socket
 import subprocess
 import sys
 import time
 import queue
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Generator, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 _ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
 _FFMPEG_PROTOCOL_WHITELIST: str = "http,https,tcp,tls,crypto,file,applehttp,hls"
 # deliberately *not* including ``http``/``https`` means a malicious upstream can't trick ffmpeg into chasing arbitrary URLs.
 _FFMPEG_PROTOCOL_WHITELIST_PIPE: str = "pipe,crypto"
+
+# Regex that matches any URI-like value inside an HLS manifest line.
+# Covers: #EXT-X-KEY:...,URI="...", #EXT-X-MAP:URI="...", bare segment lines.
+_HLS_URI_RE = re.compile(r'URI="([^"]+)"')
+
+
+def _is_safe_url(url: str) -> bool:
+    """
+    Returns True if the URL is a safe external http/https URL
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+            return False
+        if not parsed.hostname:
+            return False
+        ip = socket.gethostbyname(parsed.hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def validate_hls_manifest(manifest_url: str, timeout: int = 10) -> None:
+    """
+    Pre-fetch an HLS .m3u8 manifest and validate every URI it references.
+    a malicious organizer could host a valid
+    top-level .m3u8 on a public server that embeds segment/key URIs
+    pointing at internal addresses. ffmpeg would blindly fetch those.
+    """
+    try:
+        req = urllib.request.Request(
+            manifest_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            raw = resp.read(1_000_000).decode("utf-8", errors="replace")  # 1 MB cap
+    except Exception as exc:
+        raise ValueError(f"Could not fetch HLS manifest: {exc}") from exc
+
+    base = manifest_url
+    unsafe: list[str] = []
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#EXT") is False and line.startswith("#"):
+            # Skip pure comment lines; process EXT-X-* tags and plain lines.
+            if line.startswith("#") and not line.startswith("#EXT"):
+                continue
+
+        for m in _HLS_URI_RE.finditer(line):
+            uri = m.group(1).strip()
+            if uri:
+                absolute = uri if urlparse(uri).scheme else urljoin(base, uri)
+                if not _is_safe_url(absolute):
+                    unsafe.append(absolute)
+
+        if not line.startswith("#") and line:
+            absolute = line if urlparse(line).scheme else urljoin(base, line)
+            if not _is_safe_url(absolute):
+                unsafe.append(absolute)
+
+    if unsafe:
+        # Show only the first offender to avoid leaking internal topology.
+        raise ValueError(
+            f"HLS manifest contains a URI that resolves to a restricted address "
+            f"({unsafe[0]!r}). Submission rejected."
+        )
 
 
 def _read_up_to(stream, n: int) -> bytes:

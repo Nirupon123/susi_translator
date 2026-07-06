@@ -914,6 +914,10 @@ def configure_provider():
                 if not is_hls and (not organizer or not organizer.is_admin):
                     return jsonify({"status": "error", "message": "Only admins can provide direct stream URLs (unless it is an HLS .m3u8 stream)."}), 403
                 URLSource._validate_url(stream_url)
+                if is_hls:
+                    from audio_sources import validate_hls_manifest
+                    validate_hls_manifest(stream_url)
+
             elif stream_type == "file":
                 if not os.path.exists(stream_url):
                     return jsonify({"status": "error", "message": "File not found"}), 400
@@ -1137,6 +1141,12 @@ def translate_stream():
         return jsonify({"status": "error", "message": "Missing 'tenant_id'"}), 400
 
     _assert_tenant_ownership(tenant_id)
+    target_lang = request.args.get('target_lang')
+    if target_lang == 'original':
+        target_lang = None
+    elif not target_lang:
+        target_lang = registry.get_language_config(tenant_id).get('target_lang')
+    last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
 
     with stream_connections_lock:
         current_connections = stream_connections.get(tenant_id, 0)
@@ -1144,13 +1154,6 @@ def translate_stream():
             logger.warning(f"Stream connection cap reached for tenant {tenant_id}")
             return jsonify({"status": "error", "message": "Too many connections."}), 429
         stream_connections[tenant_id] = current_connections + 1
-
-    target_lang = request.args.get('target_lang')
-    if target_lang == 'original':
-        target_lang = None
-    elif not target_lang:
-        target_lang = registry.get_language_config(tenant_id).get('target_lang')
-    last_chunk_id = _parse_int_arg(request.args, 'last_chunk_id', default=0)
 
     def event_stream():
         try:
@@ -1171,6 +1174,8 @@ def translate_stream():
                     del stream_connections[tenant_id]
 
     return Response(event_stream(), mimetype="text/event-stream")
+
+
 
 
 # WebSocket streaming endpoint 
