@@ -983,7 +983,14 @@ def configure_provider():
             # Pass the auth token via environment variable
             # Explicitly construct a minimal environment to avoid leaking
             # sensitive parent vars to the subprocess.
-            safe_env_keys = {"PATH", "LANG", "LC_ALL", "USER", "HOME", "PYTHONPATH", "VIRTUAL_ENV"}
+            safe_env_keys = {
+                "PATH", "LANG", "LC_ALL", "USER", "HOME", "PYTHONPATH",
+                "VIRTUAL_ENV",
+                # uv-specific vars so the virtualenv is correctly inherited
+                "UV_PROJECT_ROOT", "UV_PYTHON", "UV_TOOL_DIR",
+                # pass through SSL verify setting
+                "FLASK_SSL_VERIFY",
+            }
             grabber_env = {k: os.environ[k] for k in safe_env_keys if k in os.environ}
             grabber_env["GRABBER_AUTH_TOKEN"] = internal_token
 
@@ -998,11 +1005,18 @@ def configure_provider():
 
             # Spawn BEFORE committing to DB so a spawn failure doesn't leave
             # configured=True in the DB with no active grabber process.
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instance")
+            os.makedirs(log_dir, exist_ok=True)
+            grabber_log_path = os.path.join(log_dir, f"grabber_{tenant_id[:8]}.log")
+            grabber_log_file = open(grabber_log_path, "w", buffering=1)  # line-buffered
+            logger.info(f"Grabber output → {grabber_log_path}")
             proc = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 start_new_session=True,
                 env=grabber_env,
+                stdout=grabber_log_file,
+                stderr=grabber_log_file,
             )
             with grabber_lock:
                 grabber_processes[tenant_id] = proc

@@ -13,7 +13,7 @@ from typing import Generator, List, Optional
 from urllib.parse import urlparse
 
 _ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
-_FFMPEG_PROTOCOL_WHITELIST: str = "http,https,tcp,tls,crypto"
+_FFMPEG_PROTOCOL_WHITELIST: str = "http,https,tcp,tls,crypto,file,applehttp,hls"
 # deliberately *not* including ``http``/``https`` means a malicious upstream can't trick ffmpeg into chasing arbitrary URLs.
 _FFMPEG_PROTOCOL_WHITELIST_PIPE: str = "pipe,crypto"
 
@@ -230,6 +230,7 @@ class URLSource(AudioSource):
         cmd = [
             "ffmpeg",
             "-loglevel", "error",
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "-protocol_whitelist", _FFMPEG_PROTOCOL_WHITELIST,
             "-i", self._url,
             "-f", "s16le",
@@ -241,10 +242,12 @@ class URLSource(AudioSource):
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         # Safe: self._url is validated by _validate_url() (scheme whitelist,
         # no leading '-', host required); argv is a fixed list with shell=False.
+        # stderr is inherited (not DEVNULL) so ffmpeg errors appear in the
+        # grabber log file that the server creates per-tenant.
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=sys.stderr,
             shell=False,
         )
         self._running = True
@@ -393,14 +396,20 @@ class PlatformSource(AudioSource):
         ydl_argv += ["--", self._watch_url]
 
         try:
-            url_output = subprocess.check_output(
+            result = subprocess.run(
                 ydl_argv,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                shell=False
+                shell=False,
+                check=True,
             )
+            url_output = result.stdout
         except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"yt-dlp failed to get URL: {exc}")
+            stderr_msg = exc.stderr.strip() if exc.stderr else "(no stderr)"
+            raise RuntimeError(
+                f"yt-dlp failed (exit {exc.returncode}): {stderr_msg}"
+            )
 
         lines = [line.strip() for line in url_output.splitlines() if line.strip()]
         if not lines:

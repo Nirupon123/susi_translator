@@ -44,7 +44,9 @@ from audio_sources import (
 RATE: int = 16000
 SAMPLE_WIDTH: int = 2  # 16-bit
 BUFFER_SIZE: int = 2 * 10 * RATE  # bytes -> 10 seconds of audio
-SILENCE_THRESHOLD: int = 500
+# 100 out of 32768 (≈0.3% of max). Lowered from 500 to avoid dropping
+# quiet broadcast audio. Override with the SILENCE_THRESHOLD env var.
+SILENCE_THRESHOLD: int = int(os.environ.get("SILENCE_THRESHOLD", "100"))
 
 DEFAULT_SERVER: str = "http://localhost:5040"
 VALID_SOURCES = ("mic", "file", "url", "stdin", "platform")
