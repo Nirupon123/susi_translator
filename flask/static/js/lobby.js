@@ -39,6 +39,7 @@ function renderRooms() {
                 <div class="footer-actions">
                     <button class="edit-btn" onclick="editRoom(event, '${room.tenant_id}')">Edit</button>
                     <button class="delete-btn" onclick="deleteRoom(event, '${room.tenant_id}')">Delete</button>
+                    <button class="edit-btn" style="color:#10b981;border-color:#10b981;" onclick="openDownloadPanel(event, '${room.tenant_id}')">DL</button>
                 </div>
             </div>
         `;
@@ -156,3 +157,47 @@ function escapeHtml(str) {
 
 // Fetch and render on load
 fetchRooms();
+
+// Download Panel Functions
+function openDownloadPanel(event, tenant_id) {
+    event.stopPropagation();
+    document.getElementById('downloadTenantId').value = tenant_id;
+    document.getElementById('downloadPanelOverlay').classList.add('active');
+    document.getElementById('downloadPanel').classList.add('active');
+}
+
+function closeDownloadPanel() {
+    document.getElementById('downloadPanelOverlay').classList.remove('active');
+    document.getElementById('downloadPanel').classList.remove('active');
+    document.getElementById('downloadTenantId').value = '';
+}
+
+function startDownload() {
+    const tenant_id = document.getElementById('downloadTenantId').value;
+    const lang = document.getElementById('downloadLanguage').value;
+    const btn = document.getElementById('startDownloadBtn');
+    
+    if (!tenant_id) return;
+    
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+
+    // Start download by redirecting to the endpoint
+    // Since it returns an attachment, it won't navigate away from the page
+    const downloadUrl = `/api/v1/rooms/${tenant_id}/download?lang=${lang}`;
+    
+    // We can just use an anchor click to trigger download
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = ''; 
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    // Give it a small delay before resetting the button
+    setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = 'Download';
+        closeDownloadPanel();
+    }, 1500);
+}

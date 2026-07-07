@@ -33,3 +33,12 @@ class Room(db.Model):
     stream_url = db.Column(db.Text, nullable=True)
     configured = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+class Transcript(db.Model):
+    __tablename__ = "transcripts"
+    
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.String(36), db.ForeignKey('rooms.tenant_id'), nullable=False, index=True)
+    chunk_id = db.Column(db.String(50), nullable=False, index=True)
+    text = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())

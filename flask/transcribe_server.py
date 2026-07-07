@@ -347,6 +347,21 @@ def process_audio():
                         current_transcript['transcript'] = transcript
                     else:
                         transcripts[chunk_id] = {'transcript': transcript}
+                
+                # Persist original transcript in database
+                try:
+                    with app.app_context():
+                        from auth.models import Transcript, db
+                        db_transcript = Transcript.query.filter_by(tenant_id=tenant_id, chunk_id=str(chunk_id)).first()
+                        if db_transcript:
+                            db_transcript.text = transcript
+                        else:
+                            db_transcript = Transcript(tenant_id=tenant_id, chunk_id=str(chunk_id), text=transcript)
+                            db.session.add(db_transcript)
+                        db.session.commit()
+                except Exception as db_exc:
+                    logger.error(f"Error saving transcript to DB for chunk_id {chunk_id}: {db_exc}", exc_info=True)
+
             else:
                 logger.warning(f"INVALID transcript for chunk_id {chunk_id}: {transcript}")
 
@@ -1396,7 +1411,55 @@ def provider_status(tenant_id):
     return jsonify({"status": "warming_up"}), 200
 
 
-# REST transcript endpoints
+# transcript download endpoints
+
+@app.route('/api/v1/rooms/<tenant_id>/download', methods=['GET'])
+@organizer_required
+def download_room_transcripts(tenant_id):
+    """
+    Download the transcripts for a room. Transcripts can be translated on the fly.
+    """
+    _assert_tenant_ownership(tenant_id)
+    target_lang = request.args.get('lang', 'original')
+    from auth.models import Transcript
+
+    # Fetch all transcripts for this tenant
+    records = Transcript.query.filter_by(tenant_id=tenant_id).all()
+
+    # Sort numerically by chunk_id
+    def chunk_sort_key(r):
+        try:
+            return int(r.chunk_id)
+        except ValueError:
+            return 0
+    records.sort(key=chunk_sort_key)
+
+    content = f"Event Transcript for Room {tenant_id}\n"
+    content += f"Language: {target_lang}\n"
+    content += "===================================\n\n"
+
+    for r in records:
+        text = r.text
+        if target_lang and target_lang != 'original':
+            translated = registry.translate(tenant_id, text, target_lang)
+            if translated:
+                text = translated
+
+        # format the timestamp
+        try:
+            ms = int(r.chunk_id)
+            import datetime
+            timestamp = datetime.datetime.fromtimestamp(ms / 1000.0).strftime('%H:%M:%S')
+        except ValueError:
+            timestamp = str(r.chunk_id)
+
+        content += f"[{timestamp}] {text}\n\n"
+
+    return Response(
+        content,
+        mimetype="text/plain",
+        headers={"Content-disposition": f"attachment; filename=transcript_{tenant_id}_{target_lang}.txt"}
+    )
 
 @api.route('/session')
 class Session(Resource):
@@ -1741,12 +1804,5 @@ if __name__ == '__main__':
             host,
         )
 
-    # use_reloader=False because the audio-worker thread above must not be spawned twice
-    # NOTE: Do NOT use ssl_context='adhoc' in production.
-    # In production, run Flask behind a reverse proxy (Nginx or Caddy) that handles
-    # HTTPS with a real certificate (e.g. Let's Encrypt). Flask serves plain HTTP
-    # on localhost, and the proxy terminates TLS externally.
-    # For local development with mic access (requires HTTPS), you can temporarily
-    # set ssl_context='adhoc' after installing pyopenssl, but never commit that to prod.
-    ssl_ctx = os.getenv('FLASK_SSL_CONTEXT', None)  # set to 'adhoc' only for local dev
+    ssl_ctx = os.getenv('FLASK_SSL_CONTEXT', None)
     app.run(host=host, port=port, debug=debug, use_reloader=False, ssl_context=ssl_ctx or None)

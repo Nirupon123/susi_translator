@@ -32,6 +32,37 @@
             <button class="btn-submit" id="submitRoomBtn" onclick="submitRoom()">Create</button>
         </div>
     </div>
+<!-- Download Transcripts Side Panel -->
+<div class="side-panel-overlay" id="downloadPanelOverlay" onclick="closeDownloadPanel()"></div>
+<div class="side-panel" id="downloadPanel">
+    <div class="side-panel-header">
+        <h3>Download Transcripts</h3>
+        <button class="modal-close-btn" onclick="closeDownloadPanel()" title="Close">✕</button>
+    </div>
+    <div class="side-panel-content">
+        <p class="side-panel-description">Select a language to download the translated transcripts for this room.</p>
+        <div class="form-group">
+            <label for="downloadLanguage">Language</label>
+            <select id="downloadLanguage" class="language-select">
+                <option value="original">Original (No translation)</option>
+                <option value="eng">English</option>
+                <option value="spa">Spanish</option>
+                <option value="fra">French</option>
+                <option value="deu">German</option>
+                <option value="zho">Chinese (Simplified)</option>
+                <option value="hin">Hindi</option>
+                <option value="ara">Arabic</option>
+                <option value="rus">Russian</option>
+                <option value="por">Portuguese</option>
+                <!-- Add more as needed by the provider -->
+            </select>
+        </div>
+        <input type="hidden" id="downloadTenantId" value="" />
+        <div class="side-panel-actions">
+            <button class="btn-cancel" onclick="closeDownloadPanel()">Cancel</button>
+            <button class="btn-submit" id="startDownloadBtn" onclick="startDownload()">Download</button>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
