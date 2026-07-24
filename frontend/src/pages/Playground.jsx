@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import ReactPlayer from "react-player";
 import {
   Languages,
   Mic,
@@ -15,6 +16,12 @@ import {
   Sparkles,
   Waves,
   LogOut,
+  X,
+  FileAudio,
+  Settings2,
+  ChevronDown,
+  Activity,
+  ArrowRight
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -30,6 +37,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/sonner";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 const SOURCE_LANGS = [
   { code: "auto", label: "Auto-detect" },
@@ -68,14 +80,28 @@ const SEGMENTS = [
 
 export default function Playground() {
   const { isAuthenticated, logout } = useAuth();
+  
+  const [roomState, setRoomState] = useState("config"); 
+
   const [tab, setTab] = useState("mic");
-  const [sourceLang, setSourceLang] = useState("auto");
+  const [sourceLang, setSourceLang] = useState("en");
   const [sttModel] = useState("faster-whisper");
   const [enableTranslation, setEnableTranslation] = useState(true);
   const [translationModel, setTranslationModel] = useState("nllb-200");
-  const [targets, setTargets] = useState(["hi", "es", "ja"]);
+  const [targets, setTargets] = useState(["hi"]);
+  const targetLang = targets[0] || "";
+  const setTargetLang = (code) => setTargets(code ? [code] : []);
   const [enableTTS, setEnableTTS] = useState(false);
-  const [ttsModel, setTtsModel] = useState("supertonic");
+  const [ttsVoice, setTtsVoice] = useState("aria");
+
+  const TTS_VOICES = [
+    { value: "aria",    label: "Aria" },
+    { value: "nova",    label: "Nova" },
+    { value: "ryan",    label: "Ryan" },
+    { value: "james",   label: "James" },
+    { value: "elena",   label: "Elena" },
+    { value: "marcus",  label: "Marcus" },
+  ];
 
   const [fileName, setFileName] = useState("");
   const [link, setLink] = useState("");
@@ -94,7 +120,6 @@ export default function Playground() {
       prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
     );
 
-  // Microphone capture (browser-based)
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -121,11 +146,21 @@ export default function Playground() {
     setRecording(false);
   };
 
-  useEffect(() => () => {
-    clearInterval(timerRef.current);
-    if (mediaRef.current) {
-      mediaRef.current.stream.getTracks().forEach((t) => t.stop());
-    }
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.reason && e.reason.message && e.reason.message.includes("play() request was interrupted")) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("unhandledrejection", handler);
+
+    return () => {
+      window.removeEventListener("unhandledrejection", handler);
+      clearInterval(timerRef.current);
+      if (mediaRef.current) {
+        mediaRef.current.stream.getTracks().forEach((t) => t.stop());
+      }
+    };
   }, []);
 
   const inputReady =
@@ -142,9 +177,16 @@ export default function Playground() {
       toast.error("Select at least one target language.");
       return;
     }
+    
+    setRoomState("live");
     setFeed([]);
     setRunning(true);
     toast.info("Demo mode: streaming a sample result. Connect your SUSI backend for live inference.");
+    
+    if (tab === "mic" && !recording) {
+      startRecording();
+    }
+
     let i = 0;
     const push = () => {
       if (i >= SEGMENTS.length) {
@@ -158,23 +200,32 @@ export default function Playground() {
     setTimeout(push, 700);
   };
 
+  const reconfigureRoom = () => {
+    setRoomState("config");
+    setRunning(false);
+    if (recording) {
+      stopRecording();
+    }
+  };
+
   useEffect(() => {
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [feed]);
 
+  const latestCaption = feed.length > 0 ? feed[feed.length - 1] : null;
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return (
-    <div className="min-h-screen bg-slate-50" data-testid="playground-page">
-      {/* top bar */}
-      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-3.5 sm:px-6">
+    <div className="min-h-screen bg-[#f8fafc]" data-testid="playground-page">
+      <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-200">
+        <div className="mx-auto flex h-[60px] max-w-7xl items-center justify-between px-5 sm:px-6">
           <Link to="/" className="flex items-center gap-2.5" data-testid="pg-logo">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0a52ff] text-white">
               <Languages className="h-4 w-4" />
             </span>
-            <span className="font-display text-base font-extrabold tracking-tight">
+            <span className="font-display text-base font-extrabold tracking-tight text-slate-900">
               SUSI<span className="text-[#0a52ff]">.</span>Translator
+              {roomState === "config" && <span className="ml-2 font-normal text-slate-400 italic font-serif">playground</span>}
             </span>
           </Link>
           <div className="flex items-center gap-3">
@@ -187,317 +238,425 @@ export default function Playground() {
             {isAuthenticated ? (
               <Button
                 variant="outline"
-                className="rounded-full text-red-600 hover:text-red-700 hover:bg-red-50"
+                className="h-8 rounded-full text-slate-600 hover:text-slate-900"
                 onClick={logout}
               >
-                <LogOut className="h-4 w-4" /> Log out
+                <LogOut className="h-3.5 w-3.5 mr-1.5" /> Log out
               </Button>
             ) : (
               <Button
                 variant="outline"
-                className="rounded-full"
+                className="h-8 rounded-full"
                 data-testid="pg-signin-btn"
                 onClick={() => toast("Sign-in connects to your SUSI backend, wiring pending.", { icon: "🔒" })}
               >
-                <Lock className="h-4 w-4" /> Sign in
+                <Lock className="h-3.5 w-3.5" /> Sign in
               </Button>
             )}
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-5 py-10 sm:px-6">
-        <div className="mb-8">
-          <h1 className="font-display text-4xl font-black tracking-tighter text-slate-900 sm:text-5xl">
-            Playground
-          </h1>
-          <p className="mt-2 max-w-2xl text-slate-600">
-            Configure a real-time run: choose an input, pick your models, and stream
-            transcription, translation and speech. Sign in to run live inference on your SUSI backend.
-          </p>
-        </div>
+      {roomState === "config" ? (
+        /* --- CONFIGURATION STEP --- */
+        <div className="relative flex min-h-[calc(100vh-60px)] items-center justify-center overflow-hidden bg-slate-50 p-6">
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-[800px] w-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/20 opacity-60 blur-[120px]" />
+          <div className="pointer-events-none absolute left-[-10%] top-1/2 h-[600px] w-[600px] -translate-y-1/2 rounded-full bg-cyan-300/20 opacity-50 blur-[100px]" />
+          <div className="pointer-events-none absolute right-[-10%] top-1/2 h-[600px] w-[600px] -translate-y-1/2 rounded-full bg-[#0a52ff]/10 opacity-50 blur-[100px]" />
 
-        <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
-          {/* CONFIG */}
-          <div className="rounded-[1.75rem] border border-slate-200 bg-white p-6" data-testid="pg-config">
-            <h2 className="font-display text-lg font-bold text-slate-900">Configuration</h2>
-
-            {/* input type */}
-            <div className="mt-5">
-              <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Input source
-              </Label>
-              <Tabs value={tab} onValueChange={setTab} className="mt-2">
-                <TabsList className="grid w-full grid-cols-3" data-testid="pg-input-tabs">
-                  <TabsTrigger value="mic" data-testid="pg-tab-mic">
-                    <Mic className="mr-1.5 h-4 w-4" /> Mic
-                  </TabsTrigger>
-                  <TabsTrigger value="file" data-testid="pg-tab-file">
-                    <Upload className="mr-1.5 h-4 w-4" /> File
-                  </TabsTrigger>
-                  <TabsTrigger value="link" data-testid="pg-tab-link">
-                    <Link2 className="mr-1.5 h-4 w-4" /> Link
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="mic" className="mt-4">
-                  <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6">
-                    <button
-                      onClick={recording ? stopRecording : startRecording}
-                      className={`flex h-16 w-16 items-center justify-center rounded-full text-white transition-all ${
-                        recording ? "bg-red-500 animate-pulse" : "bg-[#0a52ff] hover:scale-105"
-                      }`}
-                      data-testid="pg-mic-btn"
-                    >
-                      {recording ? <Square className="h-6 w-6" /> : <Mic className="h-6 w-6" />}
-                    </button>
-                    <span className="text-sm font-medium text-slate-700" data-testid="pg-mic-status">
-                      {recording ? `Recording · ${mmss}` : "Tap to record from your mic"}
-                    </span>
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="file" className="mt-4">
-                  <label
-                    className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center hover:border-[#0a52ff]"
-                    data-testid="pg-file-drop"
-                  >
-                    <Upload className="h-6 w-6 text-[#0a52ff]" />
-                    <span className="text-sm font-medium text-slate-700">
-                      {fileName || "Upload .mp3, .wav or audio"}
-                    </span>
-                    <span className="text-xs text-slate-400">Click to browse</span>
-                    <input
-                      type="file"
-                      accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
-                      className="hidden"
-                      data-testid="pg-file-input"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) {
-                          setFileName(f.name);
-                          toast.success(`Loaded ${f.name}`);
-                        }
-                      }}
-                    />
-                  </label>
-                </TabsContent>
-
-                <TabsContent value="link" className="mt-4">
-                  <Input
-                    value={link}
-                    onChange={(e) => setLink(e.target.value)}
-                    placeholder="https://event.m3u8 · vimeo.com/… · twitch.tv/…"
-                    data-testid="pg-link-input"
-                  />
-                  <p className="mt-2 text-xs text-slate-400">Supports HLS .m3u8, Vimeo and Twitch.</p>
-                </TabsContent>
-              </Tabs>
-            </div>
-
-            {/* source language */}
-            <div className="mt-6">
-              <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Source language
-              </Label>
-              <Select value={sourceLang} onValueChange={setSourceLang}>
-                <SelectTrigger className="mt-2" data-testid="pg-source-lang">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOURCE_LANGS.map((l) => (
-                    <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* transcription model */}
-            <div className="mt-6">
-              <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Transcription model
-              </Label>
-              <Select value={sttModel} disabled>
-                <SelectTrigger className="mt-2" data-testid="pg-stt-model">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="faster-whisper">faster-whisper</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* translation */}
-            <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Languages className="h-4 w-4 text-[#0a52ff]" />
-                  <span className="text-sm font-semibold text-slate-900">Enable translation</span>
-                </div>
-                <Switch
-                  checked={enableTranslation}
-                  onCheckedChange={setEnableTranslation}
-                  data-testid="pg-toggle-translation"
-                />
+          <div className="relative z-10 w-full max-w-4xl rounded-[2.5rem] bg-white/90 backdrop-blur-xl p-8 sm:p-12 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.1)] ring-1 ring-slate-200/50">
+            <div className="mb-10 text-center sm:text-left">
+              <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 mb-5">
+                <Settings2 className="h-3.5 w-3.5 text-[#0a52ff]" />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#0a52ff]">Live room setup</span>
               </div>
-              <AnimatePresence>
-                {enableTranslation && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="mt-4">
-                      <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Translation model
-                      </Label>
-                      <Select value={translationModel} onValueChange={setTranslationModel}>
-                        <SelectTrigger className="mt-2 bg-white" data-testid="pg-translation-model">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="nllb-200">NLLB-200</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="mt-4">
-                      <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Target languages
-                      </Label>
-                      <div className="mt-2 flex flex-wrap gap-2" data-testid="pg-targets">
-                        {TARGETS.map((t) => (
+              <h1 className="font-display font-black text-4xl sm:text-5xl tracking-tighter text-slate-900">
+                Set the <span className="font-serif-editorial font-normal italic tracking-normal text-[#0a52ff]">stage.</span>
+              </h1>
+              <p className="mt-4 text-[15px] leading-relaxed text-slate-500 max-w-lg mx-auto sm:mx-0">
+                Pick a source, choose your models, and launch a real-time room that captions and translates for everyone.
+              </p>
+            </div>
+
+            <div className="grid gap-8 lg:grid-cols-2">
+              <div>
+                <Label className="text-xs font-bold uppercase tracking-widest text-slate-400">
+                  Input source
+                </Label>
+                <Tabs value={tab} onValueChange={setTab} className="mt-3">
+                  <TabsList className="grid w-full grid-cols-3 h-12 rounded-full bg-slate-50 p-1 border border-slate-100">
+                    <TabsTrigger value="mic" className="rounded-full data-[state=active]:bg-[#0a52ff] data-[state=active]:text-white transition-all duration-200">
+                      <Mic className="mr-2 h-4 w-4" /> Mic
+                    </TabsTrigger>
+                    <TabsTrigger value="file" className="rounded-full data-[state=active]:bg-[#0a52ff] data-[state=active]:text-white transition-all duration-200">
+                      <Upload className="mr-2 h-4 w-4" /> File
+                    </TabsTrigger>
+                    <TabsTrigger value="link" className="rounded-full data-[state=active]:bg-[#0a52ff] data-[state=active]:text-white transition-all duration-200">
+                      <Link2 className="mr-2 h-4 w-4" /> Link
+                    </TabsTrigger>
+                  </TabsList>
+                  
+                  <div className="mt-4 min-h-[60px]">
+                    <TabsContent value="mic" className="m-0">
+                      <button
+                        onClick={recording ? stopRecording : startRecording}
+                        className={`flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-sm font-bold text-white transition-all shadow-md hover:opacity-90 ${
+                          recording ? "bg-[#ef4444]" : "bg-[#0f172a]"
+                        }`}
+                      >
+                        {recording ? (
+                          <>
+                            <Square className="h-4 w-4" /> Recording - {mmss}
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4" /> Tap to record from your mic
+                          </>
+                        )}
+                      </button>
+                    </TabsContent>
+
+                    <TabsContent value="file" className="m-0">
+                      {fileName ? (
+                        <div className="relative flex w-full items-center justify-between rounded-2xl border border-[#0a52ff]/20 bg-[#0a52ff]/[0.02] p-4 px-5">
+                          <div className="flex items-center gap-3 overflow-hidden">
+                            <FileAudio className="h-5 w-5 text-[#0a52ff] shrink-0" />
+                            <span className="truncate text-sm font-semibold text-slate-800">{fileName}</span>
+                          </div>
                           <button
-                            key={t.code}
-                            onClick={() => toggleTarget(t.code)}
-                            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                              targets.includes(t.code)
-                                ? "border-[#0a52ff] bg-[#0a52ff] text-white"
-                                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                            }`}
-                            data-testid={`pg-target-${t.code}`}
+                            type="button"
+                            onClick={() => { setFileName(""); toast("File removed"); }}
+                            className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 shrink-0"
                           >
-                            <img src={`https://flagcdn.com/w20/${t.country}.png`} alt={t.name} className="inline-block w-4 rounded-[2px]" /> {t.name}
+                            <X className="h-4 w-4" />
                           </button>
-                        ))}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+                        </div>
+                      ) : (
+                        <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 hover:border-[#0a52ff] hover:bg-blue-50/30 transition-all">
+                          <Upload className="h-5 w-5 text-slate-400" />
+                          <span className="text-sm font-medium text-slate-600">Select audio file...</span>
+                          <input
+                            type="file"
+                            accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) { setFileName(f.name); toast.success(`Loaded ${f.name}`); }
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                    </TabsContent>
 
-            {/* TTS */}
-            <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Volume2 className="h-4 w-4 text-[#0a52ff]" />
-                  <span className="text-sm font-semibold text-slate-900">Enable text-to-speech</span>
+                    <TabsContent value="link" className="m-0">
+                      <Input
+                        value={link}
+                        onChange={(e) => setLink(e.target.value)}
+                        placeholder="Paste HLS .m3u8, Vimeo or Twitch URL..."
+                        className="h-12 rounded-xl border-slate-200 px-4 focus-visible:ring-[#0a52ff]"
+                      />
+                    </TabsContent>
+                  </div>
+                </Tabs>
+
+                <div className="mt-8 grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs font-bold uppercase tracking-widest text-slate-400">
+                      Source language
+                    </Label>
+                    <Select value={sourceLang} onValueChange={setSourceLang}>
+                      <SelectTrigger className="mt-3 h-11 rounded-xl">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SOURCE_LANGS.map((l) => (
+                          <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs font-bold uppercase tracking-widest text-slate-400">
+                      Transcription
+                    </Label>
+                    <Select value={sttModel} disabled>
+                      <SelectTrigger className="mt-3 h-11 rounded-xl">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="faster-whisper">faster-whisper</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-                <Switch checked={enableTTS} onCheckedChange={setEnableTTS} data-testid="pg-toggle-tts" />
               </div>
-              <AnimatePresence>
-                {enableTTS && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="mt-4">
-                      <Label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        TTS model
-                      </Label>
-                      <Select value={ttsModel} onValueChange={setTtsModel}>
-                        <SelectTrigger className="mt-2 bg-white" data-testid="pg-tts-model">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="supertonic">Supertonic</SelectItem>
-                        </SelectContent>
-                      </Select>
+
+              <div className="flex flex-col gap-4">
+                <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <Languages className="h-4 w-4 text-[#0a52ff]" />
+                      <span className="font-semibold text-slate-900">Translation</span>
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                    <Switch
+                      checked={enableTranslation}
+                      onCheckedChange={setEnableTranslation}
+                      className="data-[state=checked]:bg-[#0a52ff]"
+                    />
+                  </div>
+                  <AnimatePresence>
+                    {enableTranslation && (
+                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                        <div className="mt-5">
+                          <Label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            Model
+                          </Label>
+                          <Select value={translationModel} onValueChange={setTranslationModel}>
+                            <SelectTrigger className="mt-2 h-10 rounded-lg">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="nllb-200">NLLB-200</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm ring-1 ring-slate-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <Volume2 className="h-4 w-4 text-[#0a52ff]" />
+                      <span className="font-semibold text-slate-900">Text-to-speech</span>
+                    </div>
+                    <Switch
+                      checked={enableTTS}
+                      onCheckedChange={setEnableTTS}
+                      className="data-[state=checked]:bg-[#0a52ff]"
+                    />
+                  </div>
+                  <AnimatePresence>
+                    {enableTTS && (
+                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+                        <div className="mt-5">
+                          <Label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            Voice model
+                          </Label>
+                          <Select value={ttsModel} onValueChange={setTtsModel}>
+                            <SelectTrigger className="mt-2 h-10 rounded-lg">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="supertonic">Supertonic</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
             </div>
 
             <Button
               onClick={runPipeline}
-              disabled={running}
-              className="mt-6 w-full rounded-full bg-[#0a52ff] py-6 text-base font-semibold text-white hover:bg-[#0a52ff]/90"
-              data-testid="pg-run-btn"
+              className="mt-10 h-14 w-full rounded-full bg-[#0a52ff] text-base font-bold text-white hover:bg-[#0a52ff]/90 shadow-md shadow-blue-500/20"
             >
-              {running ? (
-                <><Loader2 className="h-5 w-5 animate-spin" /> Streaming…</>
-              ) : (
-                <><Play className="h-5 w-5 fill-current" /> Start pipeline</>
-              )}
+              <Play className="mr-2 h-5 w-5 fill-current" /> Launch live room <ArrowRight className="ml-1 h-5 w-5" />
+            </Button>
+          </div>
+        </div>
+      ) : (
+        /* --- LIVE ROOM STEP --- */
+        <div className="flex flex-col mx-auto max-w-[1600px] px-4 py-6 h-[calc(100vh-60px)]">
+          <div className="mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="flex items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-red-600">
+                <span className="h-1.5 w-1.5 rounded-full bg-red-600 animate-pulse" /> LIVE
+              </span>
+              
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-900">
+                {tab === "mic" ? <Mic className="h-4 w-4 text-[#0a52ff]" /> : tab === "link" ? <Activity className="h-4 w-4 text-[#0a52ff]" /> : <FileAudio className="h-4 w-4 text-[#0a52ff]" />}
+                {tab === "mic" ? "Microphone" : tab === "link" ? "Stream" : "Audio File"}
+              </div>
+
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-slate-500">{SOURCE_LANGS.find(l => l.code === sourceLang)?.label || "English"}</span>
+                <ArrowRight className="h-3.5 w-3.5 text-slate-300" />
+                
+                {enableTranslation ? (
+                  <span className="text-slate-900 font-semibold text-sm">
+                    {targetLang ? TARGETS.find(t => t.code === targetLang)?.name : "No target"}
+                  </span>
+                ) : (
+                  <span className="text-slate-400 text-xs italic">Translation off</span>
+                )}
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={reconfigureRoom}
+              className="rounded-full font-semibold border-slate-200 text-slate-700 hover:bg-slate-50"
+            >
+              <Settings2 className="mr-1.5 h-4 w-4" /> Reconfigure
             </Button>
           </div>
 
-          {/* OUTPUT */}
-          <div className="rounded-[1.75rem] border border-slate-200 bg-white p-6" data-testid="pg-output">
-            <div className="flex items-center justify-between">
-              <h2 className="flex items-center gap-2 font-display text-lg font-bold text-slate-900">
-                <Waves className="h-5 w-5 text-[#0a52ff]" /> Live output
-              </h2>
-              {running && (
-                <span className="flex items-center gap-1.5 text-xs font-semibold text-[#0a52ff]">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-[#0a52ff]" /> Streaming
-                </span>
-              )}
-            </div>
-
-            <div
-              ref={feedRef}
-              className="mt-5 flex max-h-[560px] min-h-[420px] flex-col gap-4 overflow-y-auto pr-1"
-            >
-              {feed.length === 0 && !running && (
-                <div className="flex flex-1 flex-col items-center justify-center py-20 text-center text-slate-400">
-                  <Waves className="mb-3 h-10 w-10" />
-                  <p className="text-sm">Configure your run and press <b>Start pipeline</b>.</p>
+          <div className="grid h-full grid-cols-1 lg:grid-cols-[1fr_450px] xl:grid-cols-[1fr_550px] gap-6 overflow-hidden pb-4">
+            
+            <div className="relative rounded-3xl overflow-hidden bg-[#030712] flex items-center justify-center shadow-lg">
+              {tab === "link" && link && (
+                <div className="absolute inset-0 w-full h-full">
+                  <ReactPlayer
+                    url={link}
+                    playing={true}
+                    controls
+                    width="100%"
+                    height="100%"
+                    style={{ objectFit: "contain" }}
+                  />
                 </div>
               )}
 
-              {feed.map((seg, idx) => (
-                <motion.div
-                  key={idx}
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="rounded-2xl border border-slate-100 p-4"
-                >
-                  <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Mic className="h-3.5 w-3.5" /> Transcript · faster-whisper
+              {tab === "mic" && (
+                <div className="flex flex-col items-center justify-center gap-6 z-10 w-full h-full p-8">
+                  <div className="flex items-center gap-1.5 h-16">
+                    {[...Array(20)].map((_, i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ height: [10, Math.random() * 40 + 20, 10] }}
+                        transition={{ repeat: Infinity, duration: 0.5 + Math.random() * 0.7 }}
+                        className="w-2 rounded-full bg-[#0a52ff]"
+                      />
+                    ))}
                   </div>
-                  <p className="text-base font-medium text-slate-900">{seg.en}</p>
+                  <p className="text-slate-400 font-medium">Listening to your microphone...</p>
+                </div>
+              )}
 
-                  {enableTranslation && targets.length > 0 && (
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      {TARGETS.filter((t) => targets.includes(t.code)).map((t) => (
-                        <div key={t.code} className="rounded-xl bg-blue-50/50 px-3 py-2">
-                          <div className="mb-0.5 flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-                            <img src={`https://flagcdn.com/w20/${t.country}.png`} alt={t.name} className="w-3.5 rounded-[2px]" /> {t.name}
+              {tab === "file" && (
+                <div className="flex flex-col items-center justify-center gap-5 z-10 w-full h-full p-8">
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full bg-[#0a52ff]/20">
+                    <FileAudio className="h-12 w-12 text-[#0a52ff]" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xl font-bold text-white mb-1">{fileName}</p>
+                    <p className="text-slate-400 font-medium">Processing audio file...</p>
+                  </div>
+                </div>
+              )}
+
+              {(tab === "mic" || tab === "file") && latestCaption?.en && (
+                <div className="absolute bottom-10 w-full px-12 text-center z-20 pointer-events-none">
+                  <p className="text-2xl md:text-3xl font-semibold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] leading-tight">{latestCaption.en}</p>
+                  {enableTranslation && targets.length > 0 && latestCaption.t?.[targets[0]] && (
+                    <p className="mt-3 text-lg md:text-xl font-medium text-slate-200 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{latestCaption.t[targets[0]]}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col overflow-hidden rounded-3xl bg-white border border-slate-200 shadow-sm">
+              <div className="px-5 pt-4 pb-3 border-b border-slate-100 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="h-4 w-4 text-[#0a52ff] rotate-90" />
+                  <h3 className="font-display font-bold text-slate-900 text-sm">Captions & translations</h3>
+                </div>
+
+                <div className="flex items-center gap-2 py-1">
+                  {enableTranslation && (
+                    <div className={`min-w-0 transition-all duration-300 ease-in-out ${enableTTS ? "flex-[1.2]" : "flex-1"}`}>
+                      <Select value={targetLang} onValueChange={setTargetLang}>
+                        <SelectTrigger className="h-8 rounded-lg text-xs border-slate-200 bg-slate-50 w-full focus:ring-0 focus:ring-offset-0 transition-all duration-300">
+                          <SelectValue placeholder="Select language" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {TARGETS.map((t) => (
+                            <SelectItem key={t.code} value={t.code}>
+                              {t.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  <AnimatePresence>
+                    {enableTTS && (
+                      <motion.div
+                        initial={{ opacity: 0, width: 0, marginLeft: -8 }}
+                        animate={{ opacity: 1, width: "auto", marginLeft: 0 }}
+                        exit={{ opacity: 0, width: 0, marginLeft: -8 }}
+                        transition={{ duration: 0.3, ease: "easeInOut" }}
+                        className="flex-1 min-w-0 overflow-hidden"
+                      >
+                        <div className="min-w-[120px]">
+                          <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                            <SelectTrigger className="h-8 rounded-lg text-xs border-slate-200 bg-slate-50 w-full focus:ring-0 focus:ring-offset-0">
+                              <SelectValue placeholder="Voice" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {TTS_VOICES.map((v) => (
+                                <SelectItem key={v.value} value={v.value}>
+                                  {v.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div className="flex items-center gap-1.5 shrink-0 pl-1">
+                    <Volume2 className="h-3.5 w-3.5 text-slate-500" />
+                    <span className="text-xs font-medium text-slate-600">TTS</span>
+                    <Switch
+                      checked={enableTTS}
+                      onCheckedChange={setEnableTTS}
+                      className="data-[state=checked]:bg-[#0a52ff] scale-90"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div ref={feedRef} className="flex-1 overflow-y-auto p-5 space-y-6">
+                {feed.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-400 py-10">
+                    <Loader2 className="h-8 w-8 animate-spin mb-4 text-slate-300" />
+                    <p className="text-sm">Connecting to stream...</p>
+                  </div>
+                )}
+                {feed.map((seg, idx) => {
+                  if (!seg) return null;
+                  return (
+                    <motion.div key={idx} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="group">
+                      <p className="text-base font-semibold text-slate-900 mb-3">{seg.en}</p>
+
+                      {enableTranslation && targetLang && seg.t?.[targetLang] && (
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3 border border-slate-100/80">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+                            {TARGETS.find(t => t.code === targetLang)?.name ?? targetLang}
                           </div>
-                          <p dir={t.rtl ? "rtl" : "ltr"} className="text-sm text-slate-800">
-                            {seg.t[t.code]}
+                          <p dir={TARGETS.find(t => t.code === targetLang)?.rtl ? "rtl" : "ltr"} className="text-sm font-medium text-slate-800">
+                            {seg.t[targetLang]}
                           </p>
                         </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {enableTTS && (
-                    <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                      <Volume2 className="h-3.5 w-3.5 text-[#0a52ff]" /> Speech synthesized · Supertonic
-                    </div>
-                  )}
-                </motion.div>
-              ))}
+                      )}
+                    </motion.div>
+                  );
+                })}
+              </div>
             </div>
+
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

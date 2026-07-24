@@ -37,18 +37,24 @@ export const Navbar = () => {
     }
   };
 
+  const glassStyle = scrolled
+    ? {
+        background: "rgba(255, 255, 255, 0.6)",
+        backdropFilter: "blur(20px)",
+        WebkitBackdropFilter: "blur(20px)",
+        border: "1px solid rgba(255, 255, 255, 0.55)",
+        boxShadow: "0 8px 32px rgba(10, 82, 255, 0.08)",
+      }
+    : {};
+
   return (
-    <motion.header
-      initial={{ y: -80, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+    <header
       className="fixed inset-x-0 top-0 z-50 px-4 pt-4 sm:px-6"
       data-testid="navbar"
     >
       <div
-        className={`mx-auto flex max-w-7xl items-center justify-between rounded-full px-5 py-3 transition-all duration-500 sm:px-7 ${
-          scrolled ? "glass" : "bg-transparent"
-        }`}
+        style={glassStyle}
+        className={`mx-auto flex max-w-7xl items-center justify-between rounded-full px-5 py-3 transition-all duration-500 sm:px-7`}
       >
         <Link to="/" className="flex items-center gap-2.5" data-testid="nav-logo">
           <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#0a52ff] text-white shadow-[0_6px_20px_rgba(10,82,255,0.35)]">
@@ -149,6 +155,6 @@ export const Navbar = () => {
           </Link>
         </motion.div>
       )}
-    </motion.header>
+    </header>
   );
 };
