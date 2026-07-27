@@ -1544,6 +1544,11 @@ def stop_event(tenant_id):
     with transcripts_lock:
         transcriptd.pop(tenant_id, None)
 
+    with session_lock:
+        for src, entry in list(latest_session_by_source.items()):
+            if entry and entry[0] == tenant_id:
+                latest_session_by_source[src] = None
+
     try:
         from auth.models import Room, db
         room = db.session.get(Room, tenant_id)

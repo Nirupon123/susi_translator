@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactPlayer from "react-player";
@@ -85,13 +86,18 @@ export default function Playground() {
 
   const [tab, setTab] = useState("mic");
   const [sourceLang, setSourceLang] = useState("en");
-  const [sttModel] = useState("faster-whisper");
+  const [sttModel] = useState("whisper_local");
   const [enableTranslation, setEnableTranslation] = useState(true);
-  const [translationModel, setTranslationModel] = useState("nllb-200");
-  const [targets, setTargets] = useState(["hi"]);
+  const [translationModel, setTranslationModel] = useState("nllb_local");
+  const [targets, setTargets] = useState([]);
   const targetLang = targets[0] || "";
   const setTargetLang = (code) => setTargets(code ? [code] : []);
+  // displayLang is what the viewer sees in the live room dropdown.
+  // It is decoupled from the WS target_lang so switching the dropdown
+  // does NOT reconnect the socket or re-translate old segments.
+  const [displayLang, setDisplayLang] = useState("original");
   const [enableTTS, setEnableTTS] = useState(false);
+  const [ttsModel, setTtsModel] = useState("supertonic");
   const [ttsVoice, setTtsVoice] = useState("aria");
 
   const TTS_VOICES = [
@@ -104,6 +110,9 @@ export default function Playground() {
   ];
 
   const [fileName, setFileName] = useState("");
+  const [fileObj, setFileObj] = useState(null);
+  const [tenantId, setTenantId] = useState("");
+  const [loadingMsg, setLoadingMsg] = useState("Starting engine...");
   const [link, setLink] = useState("");
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -114,6 +123,13 @@ export default function Playground() {
   const mediaRef = useRef(null);
   const timerRef = useRef(null);
   const feedRef = useRef(null);
+  const tenantIdRef = useRef("");
+
+  
+  const getCsrfToken = () => {
+    const match = document.cookie.match(new RegExp('(^| )csrf_access_token=([^;]+)'));
+    return match ? match[2] : '';
+  };
 
   const toggleTarget = (code) =>
     setTargets((prev) =>
@@ -160,6 +176,13 @@ export default function Playground() {
       if (mediaRef.current) {
         mediaRef.current.stream.getTracks().forEach((t) => t.stop());
       }
+      if (tenantIdRef.current) {
+        fetch(`/stop_event/${tenantIdRef.current}`, {
+          method: "POST",
+          headers: { "X-CSRF-TOKEN": getCsrfToken() },
+          keepalive: true
+        }).catch(e => console.error("Cleanup error", e));
+      }
     };
   }, []);
 
@@ -168,39 +191,141 @@ export default function Playground() {
     (tab === "file" && fileName) ||
     (tab === "link" && link.trim().length > 5);
 
-  const runPipeline = () => {
+
+  const launchLiveRoom = async () => {
     if (!inputReady) {
       toast.error("Add an input first (record, upload a file, or paste a link).");
       return;
     }
-    if (enableTranslation && targets.length === 0) {
-      toast.error("Select at least one target language.");
-      return;
-    }
-    
-    setRoomState("live");
-    setFeed([]);
-    setRunning(true);
-    toast.info("Demo mode: streaming a sample result. Connect your SUSI backend for live inference.");
-    
-    if (tab === "mic" && !recording) {
-      startRecording();
-    }
 
-    let i = 0;
-    const push = () => {
-      if (i >= SEGMENTS.length) {
-        setRunning(false);
+    setRoomState("loading");
+    setLoadingMsg("Starting engine...");
+    setFeed([]);
+    
+    try {
+      let streamUrl = "";
+      if (tab === "link") {
+        streamUrl = link;
+      } else if (tab === "file" && fileObj) {
+        setLoadingMsg("Uploading audio securely...");
+        const formData = new FormData();
+        formData.append("audio_file", fileObj);
+        
+        const uploadRes = await fetch("/api/v1/translate/upload_file", {
+          method: "POST",
+          headers: { "X-CSRF-TOKEN": getCsrfToken() },
+          body: formData
+        });
+        const uploadData = await uploadRes.json();
+        if (uploadData.status === "success") {
+          streamUrl = uploadData.file_path;
+        } else {
+          toast.error("File upload failed: " + uploadData.message);
+          setRoomState("config");
+          return;
+        }
+      }
+
+      setLoadingMsg("Creating room...");
+      const sessRes = await fetch("/session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-TOKEN": getCsrfToken()
+        },
+        body: JSON.stringify({ source: tab === "link" ? "youtube" : tab })
+      });
+      const sessData = await sessRes.json();
+      if (!sessRes.ok || !sessData.tenant_id) {
+        toast.error("Failed to create room: " + (sessData.message || "Unknown error"));
+        setRoomState("config");
         return;
       }
-      setFeed((f) => [...f, SEGMENTS[i]]);
-      i += 1;
-      setTimeout(push, 2200);
-    };
-    setTimeout(push, 700);
-  };
+      const newTenantId = sessData.tenant_id;
+      tenantIdRef.current = newTenantId; // set ref synchronously so WebSocket effect sees it immediately
+      setTenantId(newTenantId);
 
-  const reconfigureRoom = () => {
+      setLoadingMsg("Configuring models...");
+      const payload = {
+        tenant_id: newTenantId,
+        stream_type: tab === "link" ? "youtube" : tab,
+        stream_url: streamUrl,
+        transcription: {
+          provider_name: sttModel,
+          config: { model_size: "base" }
+        }
+      };
+      if (enableTranslation) {
+        payload.translation = {
+          provider_name: translationModel,
+          source_lang: sourceLang,
+          config: {}
+        };
+      }
+
+      const res = await fetch("/api/v1/translate/configure", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-TOKEN": getCsrfToken()
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      
+      if (data.status !== "success") {
+        toast.error("Configuration failed: " + data.message);
+        setRoomState("config");
+        return;
+      }
+
+      if (data.pipeline_ready === true) {
+        setRoomState("live");
+        return;
+      }
+
+      setLoadingMsg("Waiting for models to load...");
+      let pollCount = 0;
+      const MAX_POLLS = 30;
+      const pollInterval = setInterval(async () => {
+        pollCount++;
+        if (pollCount > MAX_POLLS) {
+          clearInterval(pollInterval);
+          setRoomState("live"); 
+          return;
+        }
+        try {
+          const statusRes = await fetch(`/api/v1/translate/status/${newTenantId}`);
+          const statusData = await statusRes.json();
+          if (statusData.status === "ready") {
+            clearInterval(pollInterval);
+            setRoomState("live");
+          } else if (statusData.status === "failed") {
+            clearInterval(pollInterval);
+            toast.error("Stream Error: " + (statusData.message || "Failed to start audio grabber"));
+            setRoomState("config");
+          }
+        } catch (err) {
+          console.error("Polling error", err);
+        }
+      }, 1000);
+      
+    } catch (e) {
+      toast.error("Network Error: Could not reach the server.");
+      setRoomState("config");
+    }
+  };
+  const reconfigureRoom = async () => {
+    try {
+      if (tenantId) {
+        await fetch(`/stop_event/${tenantId}`, {
+          method: "POST",
+          headers: { "X-CSRF-TOKEN": getCsrfToken() }
+        });
+      }
+    } catch (e) {
+      console.error("Failed to stop event", e);
+    }
     setRoomState("config");
     setRunning(false);
     if (recording) {
@@ -215,7 +340,158 @@ export default function Playground() {
   const latestCaption = feed.length > 0 ? feed[feed.length - 1] : null;
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
+
+  // WebSocket Logic
+  useEffect(() => {
+    if (roomState !== "live") return;
+    if (!tenantId) return; // Wait until tenantId is populated
+    
+    let ws = null;
+    const connectWs = () => {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+
+      const wsTargetLang = displayLang || 'original';
+      const tid = tenantIdRef.current || tenantId;
+      const url = `${proto}//${host}/ws/v1/translate/stream?tenant_id=${tid}&source=${tab}&audio=${enableTTS}&target_lang=${wsTargetLang}`;
+      console.log("[Websocket] Connecting to:", url);
+      
+      ws = new WebSocket(url);
+      
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.status === "connected") return;
+          if (data.status === "error") {
+            toast.error("Stream connection error");
+            return;
+          }
+          
+          if (data.transcript) {
+            setFeed(prev => {
+              const idx = prev.findIndex(item => item.chunk_id === data.chunk_id);
+              const newFeed = [...prev];
+              const existing = idx >= 0 ? newFeed[idx] : {};
+              // "Lock in" the language this segment was originally rendered in so it doesn't
+              // magically swap if the user changes the dropdown later.
+              const renderedLang = existing.renderedLang || wsTargetLang;
+              const incomingT = data.translation && wsTargetLang !== 'original'
+                ? { [wsTargetLang]: data.translation }
+                : {};
+              const payload = {
+                chunk_id: data.chunk_id,
+                en: data.transcript,
+                t: { ...(existing.t || {}), ...incomingT },
+                renderedLang,
+                audio_b64: data.audio_b64
+              };
+              if (idx >= 0) newFeed[idx] = payload;
+              else newFeed.push(payload);
+              return newFeed;
+            });
+          }
+          
+          if (enableTTS && data.audio_b64) {
+            const audio = new Audio(`data:audio/wav;base64,${data.audio_b64}`);
+            audio.play().catch(e => console.error("Audio play failed:", e));
+          }
+        } catch (e) {
+          console.error("WS Parse error", e);
+        }
+      };
+    };
+    
+    connectWs();
+    
+    return () => {
+      if (ws) ws.close();
+    };
+  }, [roomState, enableTTS, tab, tenantId, displayLang]);
+
+  // Web Mic Logic
+  useEffect(() => {
+    if (roomState !== "live" || tab !== "mic") return;
+    
+    let audioCtx = null;
+    let mediaStream = null;
+    let processor = null;
+    
+    const initMic = async () => {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+        });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+        
+        let tempBuffer = [];
+        let activeBuffer = [];
+        let currentChunkId = Date.now().toString();
+        
+        processor.onaudioprocess = (e) => {
+          const data = e.inputBuffer.getChannelData(0);
+          for(let i=0; i<data.length; i++) tempBuffer.push(data[i]);
+          
+          if (tempBuffer.length >= 16000) {
+            let maxVal = 0;
+            for(let i=0; i<tempBuffer.length; i++) {
+              if (Math.abs(tempBuffer[i]) > maxVal) maxVal = Math.abs(tempBuffer[i]);
+            }
+            
+            const isSilent = maxVal <= 500/32768;
+            
+            if (isSilent) {
+              // Silence detected: mark the end of the current utterance
+              activeBuffer = [];
+              currentChunkId = Date.now().toString();
+            } else {
+              // Voice active: append the 1s block to our running buffer
+              activeBuffer.push(...tempBuffer);
+
+              const int16 = new Int16Array(activeBuffer.map(n => n * 32767));
+              const blob = new Blob([int16.buffer], { type: "audio/wav" });
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const b64 = reader.result.split(',')[1];
+                fetch('/transcripts', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCsrfToken() },
+                  body: JSON.stringify({ chunk_id: currentChunkId, audio_b64: b64, tenant_id: tenantIdRef.current })
+                }).catch(console.error);
+              };
+              reader.readAsDataURL(blob);
+
+              // Hard cutoff at 10 seconds to avoid endlessly growing buffers
+              if (activeBuffer.length >= 160000) {
+                activeBuffer = [];
+                currentChunkId = Date.now().toString();
+              }
+            }
+            tempBuffer = [];
+          }
+        };
+        setRecording(true);
+      } catch (e) {
+        toast.error("Mic access denied");
+      }
+    };
+    
+    initMic();
+    
+    return () => {
+      if (processor) { processor.disconnect(); processor = null; }
+      if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+      if (audioCtx) { audioCtx.close(); audioCtx = null; }
+      setRecording(false);
+    };
+  }, [roomState, tab, tenantId]);
+
   return (
+
     <div className="min-h-screen bg-[#f8fafc]" data-testid="playground-page">
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-200">
         <div className="mx-auto flex h-[60px] max-w-7xl items-center justify-between px-5 sm:px-6">
@@ -232,9 +508,9 @@ export default function Playground() {
             <span className="hidden items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-600 sm:flex">
               <Sparkles className="h-3.5 w-3.5" /> Demo mode
             </span>
-            <Link to="/" className="hidden items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 sm:flex">
-              <ArrowLeft className="h-4 w-4" /> Home
-            </Link>
+            <button onClick={reconfigureRoom} className="hidden items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 sm:flex">
+              <ArrowLeft className="h-4 w-4" /> Exit Room
+            </button>
             {isAuthenticated ? (
               <Button
                 variant="outline"
@@ -246,9 +522,9 @@ export default function Playground() {
             ) : (
               <Button
                 variant="outline"
-                className="h-8 rounded-full"
+                className="h-8 rounded-full text-slate-600 hover:text-slate-900"
                 data-testid="pg-signin-btn"
-                onClick={() => toast("Sign-in connects to your SUSI backend, wiring pending.", { icon: "🔒" })}
+                onClick={() => toast("Sign-in connects to your SUSI backend.", { icon: "🔒" })}
               >
                 <Lock className="h-3.5 w-3.5" /> Sign in
               </Button>
@@ -257,7 +533,7 @@ export default function Playground() {
         </div>
       </header>
 
-      {roomState === "config" ? (
+{roomState === "config" ? (
         /* --- CONFIGURATION STEP --- */
         <div className="relative flex min-h-[calc(100vh-60px)] items-center justify-center overflow-hidden bg-slate-50 p-6">
           <div className="pointer-events-none absolute left-1/2 top-1/2 h-[800px] w-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/20 opacity-60 blur-[120px]" />
@@ -341,7 +617,7 @@ export default function Playground() {
                             className="hidden"
                             onChange={(e) => {
                               const f = e.target.files?.[0];
-                              if (f) { setFileName(f.name); toast.success(`Loaded ${f.name}`); }
+                              if (f) { setFileName(f.name); setFileObj(f); toast.success(`Loaded ${f.name}`); }
                               e.target.value = "";
                             }}
                           />
@@ -385,7 +661,7 @@ export default function Playground() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="faster-whisper">faster-whisper</SelectItem>
+                        <SelectItem value="whisper_local">Whisper Local</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -417,7 +693,7 @@ export default function Playground() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="nllb-200">NLLB-200</SelectItem>
+                              <SelectItem value="nllb_local">NLLB Local</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -462,14 +738,31 @@ export default function Playground() {
             </div>
 
             <Button
-              onClick={runPipeline}
+              onClick={launchLiveRoom}
               className="mt-10 h-14 w-full rounded-full bg-[#0a52ff] text-base font-bold text-white hover:bg-[#0a52ff]/90 shadow-md shadow-blue-500/20"
             >
               <Play className="mr-2 h-5 w-5 fill-current" /> Launch live room <ArrowRight className="ml-1 h-5 w-5" />
             </Button>
           </div>
         </div>
-      ) : (
+      ) : roomState === "loading" ? (
+        <div className="relative flex min-h-[calc(100vh-60px)] items-center justify-center overflow-hidden bg-slate-50 p-6">
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-[800px] w-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/20 opacity-60 blur-[120px] animate-pulse" />
+          <div className="flex flex-col items-center justify-center relative z-10 space-y-6">
+            <div className="w-48 h-48 -mb-4">
+              <DotLottieReact
+                src="https://lottie.host/d3ce39bd-5457-4f0d-bf5d-9f6147bd1117/Twl946zLQ0.lottie"
+                loop
+                autoplay
+              />
+            </div>
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">Preparing Live Room</h2>
+              <p className="text-slate-500">{loadingMsg}</p>
+            </div>
+          </div>
+        </div>
+      ) : roomState === "live" ? (
         /* --- LIVE ROOM STEP --- */
         <div className="flex flex-col mx-auto max-w-[1600px] px-4 py-6 h-[calc(100vh-60px)]">
           <div className="mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -489,7 +782,7 @@ export default function Playground() {
                 
                 {enableTranslation ? (
                   <span className="text-slate-900 font-semibold text-sm">
-                    {targetLang ? TARGETS.find(t => t.code === targetLang)?.name : "No target"}
+                    {displayLang && displayLang !== 'original' ? TARGETS.find(t => t.code === displayLang)?.name : "Original"}
                   </span>
                 ) : (
                   <span className="text-slate-400 text-xs italic">Translation off</span>
@@ -551,14 +844,21 @@ export default function Playground() {
                 </div>
               )}
 
-              {(tab === "mic" || tab === "file") && latestCaption?.en && (
-                <div className="absolute bottom-10 w-full px-12 text-center z-20 pointer-events-none">
-                  <p className="text-2xl md:text-3xl font-semibold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] leading-tight">{latestCaption.en}</p>
-                  {enableTranslation && targets.length > 0 && latestCaption.t?.[targets[0]] && (
-                    <p className="mt-3 text-lg md:text-xl font-medium text-slate-200 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{latestCaption.t[targets[0]]}</p>
-                  )}
-                </div>
-              )}
+              {latestCaption?.en && (() => {
+                const hasTranslation = enableTranslation && latestCaption.renderedLang && latestCaption.renderedLang !== 'original' && latestCaption.t?.[latestCaption.renderedLang];
+                return (
+                  <div className="absolute bottom-10 w-full px-12 text-center z-20 pointer-events-none flex flex-col items-center">
+                    <p className={`${hasTranslation ? "text-xl md:text-2xl" : "text-2xl md:text-3xl"} font-semibold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] leading-tight transition-all`}>
+                      {latestCaption.en}
+                    </p>
+                    {hasTranslation && (
+                      <p dir={TARGETS.find(t => t.code === latestCaption.renderedLang)?.rtl ? "rtl" : "ltr"} className="mt-2 text-lg md:text-xl font-bold text-yellow-300 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] leading-tight transition-all">
+                        {latestCaption.t[latestCaption.renderedLang]}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="flex flex-col overflow-hidden rounded-3xl bg-white border border-slate-200 shadow-sm">
@@ -571,11 +871,12 @@ export default function Playground() {
                 <div className="flex items-center gap-2 py-1">
                   {enableTranslation && (
                     <div className={`min-w-0 transition-all duration-300 ease-in-out ${enableTTS ? "flex-[1.2]" : "flex-1"}`}>
-                      <Select value={targetLang} onValueChange={setTargetLang}>
+                      <Select value={displayLang} onValueChange={setDisplayLang}>
                         <SelectTrigger className="h-8 rounded-lg text-xs border-slate-200 bg-slate-50 w-full focus:ring-0 focus:ring-offset-0 transition-all duration-300">
                           <SelectValue placeholder="Select language" />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="original">Original</SelectItem>
                           {TARGETS.map((t) => (
                             <SelectItem key={t.code} value={t.code}>
                               {t.name}
@@ -638,13 +939,13 @@ export default function Playground() {
                     <motion.div key={idx} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="group">
                       <p className="text-base font-semibold text-slate-900 mb-3">{seg.en}</p>
 
-                      {enableTranslation && targetLang && seg.t?.[targetLang] && (
+                      {enableTranslation && seg.renderedLang && seg.renderedLang !== 'original' && seg.t?.[seg.renderedLang] && (
                         <div className="rounded-2xl bg-slate-50 px-4 py-3 border border-slate-100/80">
                           <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
-                            {TARGETS.find(t => t.code === targetLang)?.name ?? targetLang}
+                            {TARGETS.find(t => t.code === seg.renderedLang)?.name ?? seg.renderedLang}
                           </div>
-                          <p dir={TARGETS.find(t => t.code === targetLang)?.rtl ? "rtl" : "ltr"} className="text-sm font-medium text-slate-800">
-                            {seg.t[targetLang]}
+                          <p dir={TARGETS.find(t => t.code === seg.renderedLang)?.rtl ? "rtl" : "ltr"} className="text-sm font-medium text-slate-800">
+                            {seg.t[seg.renderedLang]}
                           </p>
                         </div>
                       )}
@@ -656,7 +957,7 @@ export default function Playground() {
 
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

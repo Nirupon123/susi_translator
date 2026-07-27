@@ -26,7 +26,24 @@ export default defineConfig({
         target: "http://127.0.0.1:5040",
         changeOrigin: true,
       },
+      "/session": {
+        target: "http://127.0.0.1:5040",
+        changeOrigin: true,
+      },
+      "/stop_event": {
+        target: "http://127.0.0.1:5040",
+        changeOrigin: true,
+      },
       "/api": {
+        target: "http://127.0.0.1:5040",
+        changeOrigin: true,
+      },
+      "/ws": {
+        target: "ws://127.0.0.1:5040",
+        changeOrigin: true,
+        ws: true,
+      },
+      "/transcripts": {
         target: "http://127.0.0.1:5040",
         changeOrigin: true,
       },
